@@ -89,9 +89,13 @@ The tool finds the engine on its own: `$AZ_KIMODO_ROOT` if set, otherwise the fi
 
 ## Licenses and credits
 
-- Installer and Maya tool: **MIT** ([LICENSE](LICENSE)), © Alexander Antonov (AzRigTool).
-- Engine: [kimodo.cpp](https://github.com/localai-org/kimodo.cpp) by LocalAI contributors, **Apache-2.0**; the fork keeps its license and notices.
-- Model: **Kimodo** by NVIDIA. SOMA and G1 weights under the [NVIDIA Open Model License](https://www.nvidia.com/en-us/agreements/enterprise-software/nvidia-open-model-license/); the SMPL-X model is non-commercial and is not downloaded.
+Full notices and license texts: [THIRD_PARTY.md](THIRD_PARTY.md) and [`licenses/`](licenses/).
+
+- Installer and Maya tool: **MIT** ([LICENSE](LICENSE)), © Alexander Antonov (AzRigTool). The skeleton tables inside the Maya tool are copied from kimodo.cpp and stay **Apache-2.0**.
+- Engine: [kimodo.cpp](https://github.com/localai-org/kimodo.cpp) by LocalAI contributors, **Apache-2.0**; the fork keeps its license and NOTICE, and marks the files it changed. The prebuilt binaries carry the Apache-2.0 and ggml (**MIT**) license texts inside the archive.
+- Models — downloaded by the installer from their publishers, **not redistributed here**: Kimodo SOMA / G1 by NVIDIA under the [NVIDIA Open Model License](https://www.nvidia.com/en-us/agreements/enterprise-software/nvidia-open-model-license/) (commercially usable, outputs are yours); the SMPL-X model is non-commercial and is not downloaded; the text encoder is **built with Meta Llama 3** under the [Meta Llama 3 Community License](https://huggingface.co/meta-llama/Meta-Llama-3-8B-Instruct).
+- **Running `kimodo.bat` accepts third-party license terms on your behalf** — Microsoft Visual Studio Build Tools, LunarG Vulkan SDK, Git for Windows, Python and Go are installed unattended, exactly as if you had clicked through their installers.
+- "Kimodo" is NVIDIA's model name, used here only to say what this installs. Not affiliated with NVIDIA, Meta or LocalAI.
 - The `.bat` is ASCII with CRLF on purpose — `cmd` cannot find labels in a file saved with LF.
 
 ## Changelog
