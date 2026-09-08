@@ -2,9 +2,9 @@
 setlocal EnableDelayedExpansion
 title Kimodo - AzRigTool
 
-set "KIMODO_VERSION=2.1.3"
+set "KIMODO_VERSION=2.2.0"
 set "KIMODO_AUTHOR=Alexander Antonov - AzRigTool"
-set "REPO=https://github.com/localai-org/kimodo.cpp"
+set "REPO=https://github.com/azigo45/kimodo.cpp"
 set "MODEL=soma-rp-v1.1"
 set "REMEMBER=%~dp0kimodo-path.txt"
 
