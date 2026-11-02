@@ -2,7 +2,7 @@
 setlocal EnableDelayedExpansion
 title Kimodo - AzRigTool
 
-set "KIMODO_VERSION=2.2.0"
+set "KIMODO_VERSION=2.2.1"
 set "KIMODO_AUTHOR=Alexander Antonov - AzRigTool"
 set "REPO=https://github.com/azigo45/kimodo.cpp"
 set "MODEL=soma-rp-v1.1"
@@ -239,11 +239,15 @@ if not exist "%ROOT%\ggml\CMakeLists.txt" (
 echo   [ok] source ready      %ROOT%
 
 set "WEIGHTS_MARKER=%ROOT%\.kimodo-weights-ok"
+set "TEXT_CHECK=%ROOT%\generated\llm2vec-text-bundle\layer-31.gguf"
 call :step 6 "Weights - about 19 GB, the long part"
-if exist "%WEIGHTS_MARKER%" (
+if exist "%WEIGHTS_MARKER%" if exist "%TEXT_CHECK%" (
     echo   [ok] already downloaded and verified, skipping
     goto :build
 )
+del "%WEIGHTS_MARKER%" >nul 2>nul
+"%GIT%" -C "%ROOT%" fetch "%REPO%" main >nul 2>nul
+if not errorlevel 1 "%GIT%" -C "%ROOT%" checkout FETCH_HEAD -- scripts/download_gguf_weights.sh >nul 2>nul
 echo   Hugging Face throttles anonymous downloads, so this is retried until
 echo   the checksums verify. Interrupting is safe - finished files are kept.
 for %%p in ("%PY%") do set "PATH=%PYSCRIPTS%;%%~dpp;%PATH%"
@@ -254,8 +258,12 @@ for /l %%a in (1,1,12) do (
         echo   --- attempt %%a of 12 ---
         "%GITBASH%" -lc "cd '%ROOT_SH%' && scripts/download_gguf_weights.sh --output \"$PWD\" --model %MODEL%"
         if not errorlevel 1 (
-            echo done > "%WEIGHTS_MARKER%"
-            echo   [ok] weights verified
+            if exist "%TEXT_CHECK%" (
+                echo done > "%WEIGHTS_MARKER%"
+                echo   [ok] weights verified
+            ) else (
+                echo   [X] the download ended but the text encoder is not on disk.
+            )
         )
     )
 )

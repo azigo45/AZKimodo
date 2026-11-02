@@ -35,7 +35,7 @@ Leave the window open while you use the demo; it *is* the server.
 | 3 | Vulkan SDK | winget |
 | 4 | `huggingface_hub` (the `hf` download client) | pip |
 | 5 | The engine fork + ggml submodule | git clone |
-| 6 | Weights: SOMA RP v1.1 + the Llama-3 text encoder (~19 GB), checksum-verified, retried up to 12× | `hf` |
+| 6 | Weights: SOMA RP v1.1 + the Llama-3 text encoder (~19 GB, at a pinned revision), checksum-verified, retried up to 12× | `hf` |
 | 7 | Release build with Vulkan (CPU fallback if no SDK) — includes `kmd-constrain` | CMake + Ninja |
 | 8 | Go (runs the web demo) | winget |
 | 9 | Start the demo, open the browser | — |
@@ -115,6 +115,7 @@ Everything else lives under **Advanced settings**: model, solver steps and seed,
 ## If something goes wrong
 
 - **Installer:** the window stays open with the reason; run the file again and it resumes. *Weights failed after 12 attempts* → Hugging Face throttling, run again later. *Running on the CPU* → install the Vulkan SDK, delete `<folder>\build`, run again. *"vcvars64.bat missing"* → Visual Studio Installer → Modify → **Desktop development with C++**.
+- **GENERATE MOTION is grey and the window says `text bundle missing`:** `kimodo.bat` older than 2.2.1 finished without the text encoder, which its publisher moved on 2026-10-29. Download the current `kimodo.bat` and run it on the same folder. It fetches the missing 15 GB. You can also fetch them by hand: `hf download LocalAI-io/Llama-3-Kimodo-GGML --revision 3e8d958803beaddb6011ac534f2be972e2710c7d --include "generated/llm2vec-text-bundle/*" --local-dir <engine folder>`.
 - **`No module named azkimodo`:** the folder is in the wrong place, or Maya has not been restarted since it was copied. Check the path in Install, step 2.
 - **The window says the install root or `kmd-generate` was not found:** run `kimodo.bat`, or set `AZ_KIMODO_ROOT` as described above.
 - **No character is found:** your rig's control names differ from those listed in *Your character*.
@@ -134,6 +135,7 @@ Full notices and license texts: [THIRD_PARTY.md](THIRD_PARTY.md) and [`licenses/
 
 ## Changelog
 
+- **2.3.1** — `kimodo.bat` 2.2.1 and the engine fork: the text encoder comes from a pinned revision, because its publisher removed the split files from `main` on 2026-10-29 and installs ended without it. An empty download is now an error, and a machine that was left without the encoder repairs itself on the next run. Maya tool unchanged (1.44.1).
 - **2.3.0** — AZ Kimodo Motion 1.44.1: pick-then-edit pose list on the timeline, RECALCULATE, Pose accuracy, IK bake, `Main` keys for jumps, turns and steps up, automatic character pick-up, keeping arms out of the body on cartoon rigs. New download `azkimodo-maya-1.44.1.zip` and step-by-step install. Engine fork reports step progress. `kimodo.bat` itself is unchanged.
 - **2.2.0** — the complete build: engine fork published, installer clones it (so `kmd-constrain` is built), Maya tool published as the `azkimodo` package (1.29.0), prebuilt Windows binaries attached.
 - **2.1.x** — installer: fixes from an adversarial review (bracket in the compiler path aborted the file; Python scripts folder unreadable on a Cyrillic user name; CPU-build remedy; Git Bash location), drive-root prompt, comments stripped, author line.
@@ -171,5 +173,7 @@ az_kimodo_gen_qt.show()
 2. Напишите промпт на английском и нажмите **GENERATE MOTION**.
 3. Нажмите **ANALYZE POSES**, выберите позу в списке, поправьте контролы и нажмите **Update**.
 4. Задайте **Pose accuracy** и нажмите **RECALCULATE**.
+
+**Кнопка GENERATE MOTION серая, окно пишет `text bundle missing`:** установщик старше 2.2.1 завершился без текстового кодировщика. Скачайте актуальный `kimodo.bat` и запустите его на той же папке, он докачает недостающие 15 ГБ.
 
 Подробности и ограничения описаны в [разделе 3](#3-the-maya-tool-az-kimodo-motion). Сборка: **Alexander Antonov — AzRigTool**.
