@@ -21,7 +21,9 @@ Launch in Maya:
 
 from __future__ import print_function
 
+import copy
 import os
+import re
 import time
 import traceback
 
@@ -37,17 +39,20 @@ except Exception:
 try:
     import maya.cmds as cmds
     import maya.OpenMayaUI as omui
+    import maya.api.OpenMaya as om2
 except Exception:
     cmds = None
     omui = None
+    om2 = None
 
 from azkimodo import az_kimodo_gen as core
 
 UI_VERSION = getattr(core, "VERSION", "?")
 WORDMARK = "AZ KIMODO MOTION"
-TAGLINE = "TEXT-TO-MOTION SKELETON GENERATOR"
+TAGLINE = "TEXT-TO-MOTION FOR YOUR CHARACTER"
 AUTHOR = "Alexander Antonov"
 WINDOW_OBJECT_NAME = "AZ_KimodoMotion_Qt"
+LIMBS_OPTVAR = "azKimodoBakeLimbs"
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _LOGO_CANDIDATES = (
@@ -302,6 +307,18 @@ def _group(title):
     return box, outer
 
 
+def _progress_bar():
+    bar = QtWidgets.QProgressBar()
+    bar.setFixedHeight(14)
+    bar.setVisible(False)
+    bar.setAlignment(QtCore.Qt.AlignCenter)
+    bar.setStyleSheet(
+        "QProgressBar { background:#232529; border:1px solid #202225;"
+        " border-radius:3px; color:#d7dae0; font-size:9px; }"
+        "QProgressBar::chunk { background:#4f8a4b; border-radius:2px; }")
+    return bar
+
+
 def _maya_main_window():
     if omui is None:
         return None
@@ -383,9 +400,29 @@ class _HelpDialog(QtWidgets.QDialog):
         browser = QtWidgets.QTextBrowser()
         browser.setHtml(
             "<h3 style='color:#9ec2f0'>What this does</h3>"
-            "<p>Generates a skeletal animation from an English text prompt and "
-            "keys it onto a fresh joint chain in the scene. The solve runs in "
-            "an external process, so Maya stays responsive.</p>"
+            "<p>Generates a character animation from an English text prompt. "
+            "When the window opens it finds the character in the scene - or "
+            "imports it from the rig file in CHARACTER - records its bind pose "
+            "and measures the retarget reference. Type a prompt, press "
+            "GENERATE MOTION, and the take is baked onto the character's "
+            "controls as it arrives. The solve runs in an external process, so "
+            "Maya stays responsive.</p>"
+            "<h3 style='color:#9ec2f0'>Changing poses</h3>"
+            "<p>Press ANALYZE POSES: the animation is read at the chosen step, "
+            "the frames are marked on the timeline and the pose list opens. "
+            "Click a pose to go to it, adjust it with the FK controls and press "
+            "Update (limbs baked to IK are posed with their IK controls). Drag "
+            "Main to place the character: on the ground it goes there and stays; "
+            "up, it jumps on that pose and comes back down, unless Main stays at "
+            "this height is on. Turn Main and it faces that way from that pose on, "
+            "with the rest of its path swinging round. New pose keeps the pose on "
+            "the current frame; "
+            "Delete "
+            "removes the selected one. When the list is ready press RECALCULATE: "
+            "the take is solved through these poses with the same prompt and "
+            "seed, and baked onto the controls. Pose accuracy, above that button, "
+            "sets how closely the poses you edited are followed. Orange marks are "
+            "poses you edited, blue are poses read from the animation.</p>"
             "<h3 style='color:#9ec2f0'>Writing prompts</h3>"
             "<ul>"
             "<li>English only, third person: <i>A person ...</i></li>"
@@ -414,6 +451,178 @@ class _HelpDialog(QtWidgets.QDialog):
 
 
 # --------------------------------------------------------------------------- #
+# Pose list
+# --------------------------------------------------------------------------- #
+
+class _PoseDialog(QtWidgets.QDialog):
+    """The poses on the timeline: pick one, then edit or delete it."""
+
+    def __init__(self, tool):
+        super(_PoseDialog, self).__init__(tool)
+        self.tool = tool
+        self._time_callback = None
+        self.setWindowTitle("AZ Kimodo Motion - poses")
+        self.setWindowFlags(QtCore.Qt.Tool)
+        self.setMinimumWidth(300)
+        self.resize(320, 460)
+
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(6)
+
+        self.list_poses = QtWidgets.QListWidget()
+        self.list_poses.setToolTip("Click a pose to go to its frame.")
+        self.list_poses.itemClicked.connect(self._picked)
+        layout.addWidget(self.list_poses, 1)
+
+        self.btn_update = _btn(
+            "Update", "accent",
+            "Replace the selected pose with what the character is doing now",
+            self._update)
+        self.btn_delete = _btn("Delete", "danger", "Remove the selected pose",
+                               self._delete)
+        layout.addWidget(_row(
+            _btn("New pose here", "sm",
+                 "Keep the character's pose on the current timeline frame",
+                 self.tool._new_pose),
+            self.btn_update, self.btn_delete))
+
+        self.chk_main_stays = _check(
+            "Main stays at this height", False,
+            "For a step up: the character rises to Main's height by this pose and\n"
+            "stays there. Off, a lifted Main is a jump: the model solves it and the\n"
+            "character comes back down by the next pose. Applies when you press\n"
+            "Update or New pose here.")
+        layout.addWidget(self.chk_main_stays)
+
+        self.spin_pose_accuracy = _spin(
+            self.tool._pose_accuracy, 0.0, 100.0, 10.0, 0,
+            "How closely RECALCULATE follows the poses you edited, in percent.\n"
+            "100 hits them exactly, easing in and out half a second around\n"
+            "each one. 0 leaves what the model made by itself. Lower it if the\n"
+            "motion looks forced around a pose. Press RECALCULATE to apply.")
+        self.spin_pose_accuracy.setSuffix(" %")
+        self.spin_pose_accuracy.valueChanged.connect(self.tool._pose_accuracy_changed)
+        layout.addWidget(_labeled("Pose accuracy", self.spin_pose_accuracy))
+
+        self.btn_recalculate = _btn(
+            "RECALCULATE", "primary",
+            "Solve the take through these poses, with the same prompt and seed,\n"
+            "and bake the result onto the controls.", self.tool._recalculate)
+        layout.addWidget(self.btn_recalculate)
+
+        self.btn_cancel = _btn("Cancel", "danger", "Stop the running solve",
+                               self.tool._cancel)
+        self.btn_cancel.setVisible(False)
+        layout.addWidget(self.btn_cancel)
+
+        self.progress = _progress_bar()
+        layout.addWidget(self.progress)
+
+        self.lbl_status = _label("")
+        self.lbl_status.setWordWrap(True)
+        self.lbl_status.setStyleSheet("color:#7d828c;font-size:9px;")
+        layout.addWidget(self.lbl_status)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._watch_time()
+        self.follow_timeline()
+
+    def hideEvent(self, event):
+        self._stop_watching_time()
+        super().hideEvent(event)
+
+    def _watch_time(self):
+        if om2 is None or self._time_callback is not None:
+            return
+        # The event, not MDGMessage's time callback: that one fires before the
+        # time has changed and would report the frame just left.
+        self._time_callback = om2.MEventMessage.addEventCallback(
+            "timeChanged", self._time_changed)
+
+    def _stop_watching_time(self):
+        callback, self._time_callback = self._time_callback, None
+        if callback is not None:
+            om2.MMessage.removeCallback(callback)
+
+    def _time_changed(self, *_args):
+        # Maya calls this on every frame change, and an error here would repeat
+        # on each one, so a window that has gone away just stops listening.
+        try:
+            self.follow_timeline()
+        except RuntimeError:
+            self._stop_watching_time()
+
+    def follow_timeline(self):
+        """Select the pose on the current frame, or nothing if it has none."""
+        start = self.tool._solve["start_frame"] if self.tool._solve else 1
+        now = int(round(cmds.currentTime(query=True)))
+        found = None
+        for row in range(self.list_poses.count()):
+            item = self.list_poses.item(row)
+            frame = item.data(QtCore.Qt.UserRole)
+            if core.take_frame_to_scene(frame, start) == now:
+                found = item
+                break
+        if found is self.list_poses.currentItem():
+            return
+        if found is None:
+            self.list_poses.setCurrentRow(-1)
+            self.list_poses.clearSelection()
+        else:
+            self.list_poses.setCurrentItem(found)
+            self.list_poses.scrollToItem(found)
+        self._sync_buttons()
+
+    def _selected(self):
+        item = self.list_poses.currentItem()
+        return item.data(QtCore.Qt.UserRole) if item else None
+
+    def refresh(self):
+        start = self.tool._solve["start_frame"] if self.tool._solve else 1
+        self.list_poses.clear()
+        for frame, pin in sorted(self.tool._poses.items()):
+            text = "Frame %d" % core.take_frame_to_scene(frame, start)
+            if frame in self.tool._unapplied:
+                text += "  -  edited, not recalculated"
+            elif pin.get("edited", True):
+                text += "  -  edited"
+            item = QtWidgets.QListWidgetItem(text)
+            item.setData(QtCore.Qt.UserRole, frame)
+            self.list_poses.addItem(item)
+        self.follow_timeline()
+        self._sync_buttons()
+
+    def _sync_buttons(self):
+        frame = self._selected()
+        chosen = frame is not None
+        self.btn_update.setEnabled(chosen)
+        self.btn_delete.setEnabled(chosen)
+        self.chk_main_stays.setChecked(
+            bool(chosen and self.tool._poses.get(frame, {}).get("main_hold")))
+
+    def set_running(self, running):
+        self.btn_recalculate.setEnabled(self.tool._install["ok"] and not running)
+        self.btn_cancel.setVisible(running)
+        self.btn_cancel.setEnabled(running)
+
+    def _picked(self, item):
+        self._sync_buttons()
+        self.tool._open_pose(item.data(QtCore.Qt.UserRole))
+
+    def _update(self):
+        frame = self._selected()
+        if frame is not None:
+            self.tool._update_pose(frame)
+
+    def _delete(self):
+        frame = self._selected()
+        if frame is not None:
+            self.tool._delete_pose(frame)
+
+
+# --------------------------------------------------------------------------- #
 # Main window
 # --------------------------------------------------------------------------- #
 
@@ -436,6 +645,21 @@ class AZKimodoMotionWindow(QtWidgets.QDialog):
         self._last_take = None
         self._pins = []
         self._building_pins = False
+        self._solve = None
+        self._poses = {}
+        self._unapplied = set()
+        self._released = set()
+        self._poses_changed = False
+        self._pose_dialog = None
+        self._pose_accuracy = 100.0
+        self._pending = None
+        self._inflight = None
+        self._cancelling = False
+        self._stored = ""
+        self._baked = None
+        self._armed = None
+        self._undo_callbacks = []
+        self._embed_prompt = ""
         self._install = core.probe()
 
         self._timer = QtCore.QTimer(self)
@@ -448,6 +672,11 @@ class AZKimodoMotionWindow(QtWidgets.QDialog):
         root.addWidget(self._build_header())
         root.addWidget(self._build_body(), 1)
 
+        # Under the scrolling body, so a long solve can be stopped from anywhere.
+        root.addWidget(self.btn_cancel)
+        self.progress = _progress_bar()
+        root.addWidget(self.progress)
+
         self.lbl_status = _label("")
         self.lbl_status.setStyleSheet("color:#7d828c;font-size:9px;")
         self.lbl_status.setWordWrap(True)
@@ -455,6 +684,10 @@ class AZKimodoMotionWindow(QtWidgets.QDialog):
 
         self._add_segment()
         self._report_install()
+        # After the window is on screen, so a 20 MB rig import is seen as
+        # "looking for the character" rather than as a window that will not
+        # open.
+        QtCore.QTimer.singleShot(0, self._auto_character)
 
     # -- header ----------------------------------------------------------- #
 
@@ -524,13 +757,34 @@ class AZKimodoMotionWindow(QtWidgets.QDialog):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(8)
 
-        layout.addWidget(self._build_model_group())
+        # The everyday path stays on screen: who, what, generate, adjust.
+        # Everything else waits behind one button.
+        layout.addWidget(self._build_character_group())
         layout.addWidget(self._build_prompt_group())
-        layout.addWidget(self._build_solver_group())
-        layout.addWidget(self._build_scene_group())
-        layout.addWidget(self._build_pins_group())
-        layout.addWidget(self._build_retarget_group())
         layout.addWidget(self._build_action_group())
+        layout.addWidget(self._build_edit_group())
+
+        advanced = QtWidgets.QWidget()
+        advanced_layout = QtWidgets.QVBoxLayout(advanced)
+        advanced_layout.setContentsMargins(0, 0, 0, 0)
+        advanced_layout.setSpacing(8)
+        advanced_layout.addWidget(self._build_model_group())
+        advanced_layout.addWidget(self._build_solver_group())
+        advanced_layout.addWidget(self._build_scene_group())
+        advanced_layout.addWidget(self._build_pins_group())
+        advanced_layout.addWidget(self._build_retarget_group())
+        advanced_layout.addWidget(_btn(
+            "Import existing take...", "accent",
+            "Pick a folder that already holds root_positions.f32",
+            self._import_folder))
+        advanced.setVisible(False)
+
+        toggle = _btn("Advanced settings", "sm",
+                      "Model, solver, scene, manual pose pins, retarget options")
+        toggle.setCheckable(True)
+        toggle.toggled.connect(advanced.setVisible)
+        layout.addWidget(toggle)
+        layout.addWidget(advanced)
         layout.addStretch(1)
 
         area = QtWidgets.QScrollArea()
@@ -545,6 +799,12 @@ class AZKimodoMotionWindow(QtWidgets.QDialog):
         self.cmb_model = _combo(labels or ["<none found>"],
                                 "Motion model to solve with")
         self.cmb_model.setEnabled(bool(labels))
+        # The selector is out of sight now, so the default has to be a model
+        # the character can actually use.
+        for index, model in enumerate(self._install["models"]):
+            if model["skeleton_key"] == core.SOMA30["key"]:
+                self.cmb_model.setCurrentIndex(index)
+                break
         self.cmb_model.currentIndexChanged.connect(self._describe_model)
         layout.addWidget(self.cmb_model)
 
@@ -620,6 +880,7 @@ class AZKimodoMotionWindow(QtWidgets.QDialog):
             "Where a pose is read from. Reading the target rig inverts the\n"
             "retarget, which is exact for every mapped joint - the ones it has\n"
             "no bone for are left unpinned rather than guessed.")
+        self.cmb_pin_source.setCurrentIndex(1)
         self.cmb_pin_source.currentIndexChanged.connect(self._describe_pin_mode)
         layout.addWidget(_labeled("Read from", self.cmb_pin_source))
 
@@ -730,32 +991,65 @@ class AZKimodoMotionWindow(QtWidgets.QDialog):
         self._describe_pin_mode()
         return box
 
-    def _build_retarget_group(self):
-        box, layout = _group("RETARGET")
+    def _build_character_group(self):
+        # The rig the animation lands on. It arrives by itself when the window
+        # opens - found in the scene or imported from the file below - so this
+        # group mostly reports; the buttons are for the unusual case.
+        box, layout = _group("CHARACTER")
 
-        self.line_target = QtWidgets.QLineEdit("")
-        self.line_target.setPlaceholderText("target root joint")
-        self.line_target.setToolTip("Root joint of the rig to drive. "
-                                    "UE5 Mannequin is recognised by name.")
-        layout.addWidget(_row(
-            self.line_target,
-            _btn("<<", "sm", "Use the selected joint", self._pick_target)))
+        self.lbl_target = _label("Looking for the character...")
+        self.lbl_target.setWordWrap(True)
+        self.lbl_target.setStyleSheet("font-size:11px;")
+        layout.addWidget(self.lbl_target)
 
+        self.btn_change_character = _btn(
+            "Change...", "sm", "Use a different rig or rig file")
+        self.btn_change_character.setCheckable(True)
         layout.addWidget(_row(
-            _btn("Import skeleton FBX...", "sm",
-                 "Import a rig to retarget onto", self._import_target),
-            _btn("Remember bind pose", "sm",
-                 "Record the rig's current pose as the reference every\n"
-                 "retarget and pin is measured against. Only needed for a rig\n"
-                 "that was opened rather than imported here - and the rig must\n"
-                 "be at bind when you press it.",
-                 self._remember_bind_pose),
+            _btn("Frame", "sm", "Fit the view to the character",
+                 self._frame_character),
+            self.btn_change_character,
             None))
 
-        self.lbl_target = _label("No target set.")
-        self.lbl_target.setWordWrap(True)
-        self.lbl_target.setStyleSheet("color:#7d828c;font-size:9px;")
-        layout.addWidget(self.lbl_target)
+        self.char_tools = QtWidgets.QWidget()
+        tools = QtWidgets.QVBoxLayout(self.char_tools)
+        tools.setContentsMargins(0, 0, 0, 0)
+        tools.setSpacing(5)
+        self.char_tools.setVisible(False)
+        self.btn_change_character.toggled.connect(self.char_tools.setVisible)
+        layout.addWidget(self.char_tools)
+
+        self.line_target = QtWidgets.QLineEdit("")
+        self.line_target.setReadOnly(True)
+        self.line_target.setPlaceholderText("rig root")
+        self.line_target.setToolTip("The node the animation is written under. "
+                                    "Set by itself; Use selected overrides it.")
+        self.line_target.setStyleSheet("color:#7d828c;font-size:9px;")
+        tools.addWidget(self.line_target)
+
+        tools.addWidget(_row(
+            _btn("Use selected", "sm",
+                 "Drive the selected rig instead - its top node or root joint",
+                 self._pick_target),
+            _btn("Import FBX...", "sm",
+                 "Bring in a different skeleton to drive", self._import_target),
+            None))
+
+        self.line_character = QtWidgets.QLineEdit(core.character_file())
+        self.line_character.setPlaceholderText("rig file (.ma, .mb or .fbx)")
+        self.line_character.setToolTip(
+            "The rig file loaded when the scene holds no character.\n"
+            "Remembered between sessions.")
+        tools.addWidget(_row(
+            self.line_character,
+            _btn("...", "sm", "Pick the rig file", self._browse_character),
+            _btn("Load", "sm",
+                 "Import the rig file now, even if a character is already in "
+                 "the scene", self._load_character)))
+        return box
+
+    def _build_retarget_group(self):
+        box, layout = _group("RETARGET")
 
         self.spin_neck = _spin(1.0, 0.0, 1.0, 0.1, 2,
                                "How much of the generator's head and neck\n"
@@ -770,13 +1064,36 @@ class AZKimodoMotionWindow(QtWidgets.QDialog):
             "measuring. Without this an A-posed rig replays every limb\n"
             "offset by the difference between the two rest poses.")
         self.chk_auto_retarget = _check(
-            "Retarget after generate", False,
-            "Run the retarget as soon as a take is imported")
+            "Retarget after generate", True,
+            "Put the take on the character as soon as it is solved. Off,\n"
+            "the generated skeleton stays in the scene and RETARGET LAST\n"
+            "TAKE does it by hand.")
         self.chk_hide_source = _check(
             "Delete source skeleton", True,
             "Remove the generated joints once the motion is on the target,\n"
             "so takes do not pile up in the scene")
+        self.chk_lock_feet = _check(
+            "Lock planted feet", True,
+            "Shift the body along the ground so a foot that is standing does\n"
+            "not slide. The path changes slightly; edited frames stay where\n"
+            "they were posed.")
+        self.chk_keep_path = _check(
+            "Keep poses on path", True,
+            "Fit a pose to the animation on its frame: where the character\n"
+            "is, which way it faces, and how high its feet are.")
+        self.chk_arms_out = _check(
+            "Keep arms out of the body", True,
+            "Swing elbows and forearms out when the bake puts them inside the\n"
+            "character, using its measured thickness. The hand keeps its\n"
+            "orientation.")
+        self.spin_arm_clearance = _spin(
+            core.ARM_CLEARANCE_DEFAULT, 0.0, 30.0, 0.5, 1,
+            "Air to keep between the arm and the body, in scene units.")
+        layout.addWidget(self.chk_arms_out)
+        layout.addWidget(_labeled("Arm clearance", self.spin_arm_clearance))
+        layout.addWidget(self.chk_keep_path)
         layout.addWidget(self.chk_align)
+        layout.addWidget(self.chk_lock_feet)
         layout.addWidget(self.chk_auto_retarget)
         layout.addWidget(self.chk_hide_source)
 
@@ -792,16 +1109,33 @@ class AZKimodoMotionWindow(QtWidgets.QDialog):
         self.btn_retarget.setEnabled(False)
         layout.addWidget(self.btn_retarget)
 
-        layout.addWidget(_btn(
-            "Clear rig animation", "danger",
-            "Wipe the baked keys and the cached reference pose.\n"
-            "Use this if the first retarget ran on a rig that was not in its\n"
-            "bind pose - that wrong reference is reused by every later take.",
-            self._clear_rig))
+        layout.addWidget(_row(
+            _btn("Remember bind pose", "sm",
+                 "Record the rig's current pose as the reference every\n"
+                 "retarget and pin is measured against. Done by itself when\n"
+                 "the character arrives; press it only for a rig that came in\n"
+                 "another way - and only while it stands at bind.",
+                 self._remember_bind_pose),
+            _btn("Clear rig animation", "danger",
+                 "Wipe the baked keys and the cached reference pose.\n"
+                 "Use this if the first retarget ran on a rig that was not in\n"
+                 "its bind pose - that wrong reference is reused by every\n"
+                 "later take.",
+                 self._clear_rig)))
         return box
 
     def _build_action_group(self):
         box, layout = _group("ACTIONS")
+        self.cmb_limbs = _combo(
+            [choice[0] for choice in core.IK_LIMB_CHOICES],
+            "Which controls drive the arms and legs. Bakes onto IK from the FK\n"
+            "animation, which is kept, so changing this does not need a new\n"
+            "generation.")
+        self.cmb_limbs.setCurrentIndex(
+            cmds.optionVar(query=LIMBS_OPTVAR)
+            if cmds and cmds.optionVar(exists=LIMBS_OPTVAR) else 0)
+        self.cmb_limbs.currentIndexChanged.connect(self._limbs_changed)
+        layout.addWidget(_labeled("Bake limbs to", self.cmb_limbs))
         self.btn_generate = _btn("GENERATE MOTION", "primary",
                                  "Solve the prompt and import the result",
                                  self._generate)
@@ -809,12 +1143,24 @@ class AZKimodoMotionWindow(QtWidgets.QDialog):
 
         self.btn_cancel = _btn("Cancel", "danger", "Stop the running solve",
                                self._cancel)
-        self.btn_cancel.setEnabled(False)
-        layout.addWidget(self.btn_cancel)
+        self.btn_cancel.setVisible(False)
+        return box
 
-        layout.addWidget(_btn("Import existing take...", "accent",
-                              "Pick a folder that already holds "
-                              "root_positions.f32", self._import_folder))
+    def _build_edit_group(self):
+        box, layout = _group("POSES")
+        self.spin_pose_step = _ispin(
+            core.POSE_STEP_DEFAULT, 1, 200,
+            "Timeline frames between poses. Fewer poses leave the model more\n"
+            "room to change the motion; more poses keep it closer to what it is.")
+        layout.addWidget(_row(
+            _label("Every"), self.spin_pose_step, _label("frames"),
+            _btn("ANALYZE POSES", "primary",
+                 "Read the animation at this step, mark those frames on the\n"
+                 "timeline and open the pose list. Poses you edited are kept.",
+                 self._analyze_poses)))
+        self.btn_pose_list = _btn("Open pose list", "sm",
+                                  "Show the pose list again", self._show_pose_dialog)
+        layout.addWidget(self.btn_pose_list)
         return box
 
     # -- segments --------------------------------------------------------- #
@@ -881,6 +1227,8 @@ class AZKimodoMotionWindow(QtWidgets.QDialog):
 
     def _say(self, message):
         self.lbl_status.setText(message)
+        if self._pose_dialog is not None:
+            self._pose_dialog.lbl_status.setText(message)
 
     # -- generation ------------------------------------------------------- #
 
@@ -936,6 +1284,18 @@ class AZKimodoMotionWindow(QtWidgets.QDialog):
                              limit, limit - 1))
                 return
 
+        self._inflight = {
+            "solve": None if len(segments) > 1 else {
+                "prompt": segments[0]["prompt"],
+                "frames": segments[0]["frames"],
+                "seed": self.spin_seed.value(),
+                "steps": self.spin_steps.value(),
+                "model": model["path"],
+                "start_frame": self.spin_start.value()},
+            "poses": {},
+            "edited_frame": None}
+        self._embed_prompt = segments[0]["prompt"] if use_pins else ""
+
         hard = self.chk_hard_pins.isChecked()
         if use_pins and not hard and any(
                 pin.get("mode") in core.PIN_MODES_NEEDING_HARD for pin in self._pins):
@@ -976,10 +1336,13 @@ class AZKimodoMotionWindow(QtWidgets.QDialog):
             self._say("Cannot start: %s" % error)
             traceback.print_exc()
             return
+        self._launch(argv)
 
+    def _launch(self, argv):
         environment = QtCore.QProcessEnvironment.systemEnvironment()
         for key, value in core.child_environment(argv[0]).items():
             environment.insert(key, value)
+        environment.insert("KIMODO_PROGRESS", "1")
 
         self._process = QtCore.QProcess(self)
         self._process.setWorkingDirectory(self._install["root"])
@@ -987,64 +1350,186 @@ class AZKimodoMotionWindow(QtWidgets.QDialog):
         self._process.setProcessChannelMode(QtCore.QProcess.MergedChannels)
         self._process.finished.connect(self._on_finished)
         self._process.errorOccurred.connect(self._on_error)
+        self._process.readyReadStandardOutput.connect(self._read_progress)
+
+        self._solver_log = []
+        self._solver_partial = ""
+        self._solver_step = (0, 0)
+        self._solver_stepped_at = 0.0
+        # Several prompt segments solve one after another, restarting the steps.
+        self._solver_pass = 0
+        self._solver_passes = 1 if self._inflight and self._inflight["edited_frame"] is not None \
+            else max(1, len(self._segments))
+        self._show_progress(None, "Loading the model...")
 
         self._started_at = time.time()
         self._timer.start()
-        self.btn_generate.setEnabled(False)
-        self.btn_cancel.setEnabled(True)
+        self._cancelling = False
+        self._set_running(True)
         self._say("Solving...")
         self._process.start(argv[0], argv[1:])
+
+    def _bars(self):
+        bars = [self.progress]
+        if self._pose_dialog is not None:
+            bars.append(self._pose_dialog.progress)
+        return bars
+
+    def _show_progress(self, percent, text):
+        """Drive the bar. `percent` None means working, with no way to say how far."""
+        for bar in self._bars():
+            if percent is None:
+                bar.setRange(0, 0)
+            else:
+                bar.setRange(0, 100)
+                bar.setValue(int(percent))
+            bar.setFormat(text)
+            bar.setVisible(True)
+
+    def _hide_progress(self):
+        for bar in self._bars():
+            bar.setVisible(False)
+
+    def _read_progress(self):
+        if self._process is None:
+            return
+        text = self._solver_partial + bytes(
+            self._process.readAllStandardOutput()).decode("utf-8", "replace")
+        lines = text.split("\n")
+        self._solver_partial = lines.pop()
+        for line in lines:
+            match = re.match(r"\s*kimodo-step (\d+) (\d+)", line)
+            if not match:
+                self._solver_log.append(line)
+                continue
+            step, steps = int(match.group(1)), int(match.group(2))
+            if step <= self._solver_step[0]:
+                self._solver_pass += 1
+            self._solver_step = (step, steps)
+            if step == 1:
+                self._solver_stepped_at = time.time()
+        self._update_progress()
+
+    def _update_progress(self):
+        step, steps = self._solver_step
+        if not steps or self._cancelling:
+            return
+        passes = max(self._solver_passes, self._solver_pass + 1)
+        done = (self._solver_pass + float(step) / steps) / passes
+        left = ""
+        if step > 1:
+            per_step = (time.time() - self._solver_stepped_at) / (step - 1)
+            remaining = per_step * ((passes - self._solver_pass) * steps - step)
+            left = " - about %ds left" % max(1, int(remaining + 0.5))
+        self._show_progress(min(99.0, done * 100.0),
+                            "Step %d of %d%s" % (step, steps, left))
 
     def _tick(self):
         elapsed = int(time.time() - self._started_at)
         self._say("Solving... %ds elapsed" % elapsed)
+        self._update_progress()
 
     def _cancel(self):
         if self._process is None:
             return
+        self._cancelling = True
+        # The timer and the solver's own output would write over this.
+        self._timer.stop()
+        self.btn_cancel.setEnabled(False)
+        if self._pose_dialog is not None:
+            self._pose_dialog.btn_cancel.setEnabled(False)
+        self._show_progress(None, "Cancelling...")
         self._say("Cancelling...")
         self._process.kill()
 
+    def _set_running(self, running):
+        self.btn_generate.setEnabled(self._install["ok"] and not running)
+        self.btn_cancel.setVisible(running)
+        self.btn_cancel.setEnabled(running)
+        self.cmb_limbs.setEnabled(not running)
+        self._refresh_retarget_button()
+        if self._pose_dialog is not None:
+            self._pose_dialog.set_running(running)
+
     def _teardown_process(self):
         self._timer.stop()
-        self.btn_generate.setEnabled(self._install["ok"])
-        self.btn_cancel.setEnabled(False)
         process, self._process = self._process, None
+        self._set_running(False)
         return process
 
     def _on_error(self, error):
-        process = self._process
-        if process is None:
+        # Only a failed start ends here: a process that dies, killed or crashed,
+        # goes on to report finished, with its exit code and its log.
+        if self._process is None or error != QtCore.QProcess.FailedToStart:
             return
         self._teardown_process()
+        self._hide_progress()
+        self._inflight = None
         self._say("Generator failed to run (%s). Check that the build and its "
                   "ggml DLLs are in place." % error)
 
     def _on_finished(self, exit_code, exit_status):
+        self._read_progress()
         process = self._teardown_process()
         if process is None:
             return
+        process.deleteLater()
+        cancelled, self._cancelling = self._cancelling, False
+        try:
+            if cancelled:
+                self._inflight = None
+                core.discard_unfinished_take(self._take_dir)
+                self._say("Cancelled. The animation is unchanged.")
+                return
+            # Importing and baking block Maya for a moment, so say so before that.
+            if exit_code == 0 and exit_status != QtCore.QProcess.CrashExit:
+                self._show_progress(100, "Baking onto the character...")
+                # Paint only: a click let through here would start another solve
+                # over the one about to be baked.
+                QtWidgets.QApplication.processEvents(
+                    QtCore.QEventLoop.ExcludeUserInputEvents)
+            self._finish_solve(exit_code, exit_status)
+        finally:
+            self._hide_progress()
 
-        log = bytes(process.readAllStandardOutput()).decode("utf-8", "replace")
+    def _finish_solve(self, exit_code, exit_status):
+        log = "\n".join(self._solver_log + [self._solver_partial])
         if log.strip():
             print(log.strip())
 
-        if exit_code != 0:
-            self._say("Generator exited with code %d - see the Script Editor."
-                      % exit_code)
+        if exit_code != 0 or exit_status == QtCore.QProcess.CrashExit:
+            self._inflight = None
+            self._say("Generator stopped unexpectedly (exit code %d) - see the "
+                      "Script Editor." % exit_code)
             return
 
         elapsed = int(time.time() - self._started_at)
         # File the embedding this run produced, so the next run of the same
         # prompt skips loading the text model.
-        if self._pins and self.chk_use_pins.isChecked():
+        if self._embed_prompt:
             try:
-                core.keep_embedding(self._take_dir,
-                                    self._segments[0].prompt(),
+                core.keep_embedding(self._take_dir, self._embed_prompt,
                                     self._install["root"])
             except Exception:
                 traceback.print_exc()
 
+        # One undo step, whatever it takes to get the solve onto the rig.
+        cmds.undoInfo(openChunk=True, chunkName="AZ Kimodo Motion solve")
+        try:
+            self._bake_solved(elapsed)
+        finally:
+            cmds.undoInfo(closeChunk=True)
+
+    def _bake_solved(self, elapsed):
+        inflight = self._inflight or {}
+        target = self.line_target.text().strip()
+        if (inflight.get("edited_frame") is not None and target
+                and cmds.objExists(target)
+                and core.solve_text(target) != inflight.get("stored")):
+            self._inflight = None
+            self._say("The poses changed during the solve, so it was not baked. "
+                      "Press RECALCULATE again.")
+            return
         try:
             cmds.undoInfo(openChunk=True, chunkName="AZ Kimodo Motion import")
             try:
@@ -1057,17 +1542,32 @@ class AZKimodoMotionWindow(QtWidgets.QDialog):
             finally:
                 cmds.undoInfo(closeChunk=True)
         except Exception as error:
+            self._inflight = None
             self._say("Solved, but the import failed: %s" % error)
             traceback.print_exc()
             return
 
+        self._pending, self._inflight = self._inflight, None
         cmds.select(result["top"], replace=True)
         self._remember_take(result)
         self._say("Done in %ds - %d frames, %d joints (%s)"
                   % (elapsed, result["frames"], result["joint_count"],
                      result["skeleton"]))
-        if self.chk_auto_retarget.isChecked() and self.line_target.text().strip():
-            self._retarget()
+
+        edited = self._pending["edited_frame"] if self._pending else None
+        target = self.line_target.text().strip()
+        if not target or not (edited is not None
+                              or self.chk_auto_retarget.isChecked()):
+            return
+        # An edit always replaces: appending it would play the take twice.
+        if not self._retarget(mode="replace" if edited is not None else None):
+            return
+        if edited is not None:
+            cmds.currentTime(core.take_frame_to_scene(
+                edited, self._solve["start_frame"]), edit=True)
+            self._after_recalculate(target, edited)
+            self._say("Recalculated in %ds. The poses are on the character "
+                      "and its controls." % elapsed)
 
     def _import_folder(self):
         picked = cmds.fileDialog2(fileMode=3, okCaption="Import",
@@ -1075,6 +1575,10 @@ class AZKimodoMotionWindow(QtWidgets.QDialog):
                                   startingDirectory=self._install["root"])
         if not picked:
             return
+        with core.undo_chunk("import take"):
+            self._import_picked(picked)
+
+    def _import_picked(self, picked):
         try:
             cmds.undoInfo(openChunk=True, chunkName="AZ Kimodo Motion import")
             try:
@@ -1092,12 +1596,94 @@ class AZKimodoMotionWindow(QtWidgets.QDialog):
             return
         cmds.select(result["top"], replace=True)
         self._remember_take(result)
+        self._pending = {"solve": None, "poses": {}, "edited_frame": None}
         self._say("Imported %d frames, %d joints (%s)"
                   % (result["frames"], result["joint_count"], result["skeleton"]))
         if self.chk_auto_retarget.isChecked() and self.line_target.text().strip():
             self._retarget()
 
     # -- retarget --------------------------------------------------------- #
+
+    # -- character -------------------------------------------------------- #
+
+    def _auto_character(self):
+        """Find or load the character and make it the target. Runs on open."""
+        if cmds is None:
+            return
+        self.lbl_target.setText("Looking for the character...")
+        self._say("Looking for the character...")
+        try:
+            info = core.ensure_character(
+                self.line_character.text().strip() or None)
+        except Exception as error:
+            self.lbl_target.setText("No character: %s" % error)
+            self.btn_change_character.setChecked(True)
+            self._say("Could not bring the character in - pick its rig file "
+                      "below and press Load.")
+            traceback.print_exc()
+            return
+        if not info["root"]:
+            self.lbl_target.setText(
+                "No character. Pick its rig file below and press Load, or "
+                "select a rig and press Use selected.")
+            self.btn_change_character.setChecked(True)
+            self._say("; ".join(info["notes"]))
+            return
+
+        self._set_target(info["root"], quiet=True)
+        if info["loaded"]:
+            try:
+                core.frame_character(info["root"])
+            except Exception:
+                traceback.print_exc()
+        how = ("loaded from %s" % os.path.basename(info["path"])
+               if info["loaded"] else "already in the scene")
+        self._say("Character ready - %s, %s%s. Type a prompt and press "
+                  "GENERATE MOTION."
+                  % (info["label"], how,
+                     ("; " + "; ".join(info["notes"])) if info["notes"] else ""))
+
+    def _browse_character(self):
+        picked = cmds.fileDialog2(
+            fileMode=1, okCaption="Use", caption="Pick the character rig file",
+            fileFilter="Maya scene or FBX (*.ma *.mb *.fbx *.FBX)")
+        if not picked:
+            return
+        path = picked[0].replace("\\", "/")
+        self.line_character.setText(path)
+        core.remember_character_file(path)
+        self._say("Character file set. Press Load to bring it in now; from "
+                  "the next open it comes in by itself when the scene has no "
+                  "character.")
+
+    def _load_character(self):
+        path = self.line_character.text().strip()
+        if not path:
+            self._say("Pick the character rig file first.")
+            return
+        try:
+            cmds.undoInfo(openChunk=True, chunkName="AZ Kimodo Motion load character")
+            try:
+                root, _key = core.load_character(path)
+            finally:
+                cmds.undoInfo(closeChunk=True)
+        except Exception as error:
+            self._say("Could not load the character: %s" % error)
+            traceback.print_exc()
+            return
+        core.remember_character_file(path)
+        self._set_target(root)
+        try:
+            core.frame_character(root)
+        except Exception:
+            traceback.print_exc()
+
+    def _frame_character(self):
+        target = self.line_target.text().strip()
+        if not target or not cmds.objExists(target):
+            self._say("No character in the scene to frame.")
+            return
+        core.frame_character(target)
 
     def _pick_target(self):
         # A control rig is driven through curve transforms, not joints, so the
@@ -1130,13 +1716,14 @@ class AZKimodoMotionWindow(QtWidgets.QDialog):
             return
         self._set_target(root)
 
-    def _set_target(self, root):
+    def _set_target(self, root, quiet=False):
         self.line_target.setText(root)
         note = ""
         try:
             key = core.identify_target(root)
             self.lbl_target.setText(
-                "Recognised: %s" % core.TARGET_LABELS.get(key, key) if key
+                "%s  -  %s" % (root.split("|")[-1].split(":")[-1],
+                               core.TARGET_LABELS.get(key, key)) if key
                 else core.describe_target(root).capitalize())
             # A rig opened from a file has no recorded bind pose. Taking it
             # now is safe while nothing is animated; once it is, only the
@@ -1146,14 +1733,21 @@ class AZKimodoMotionWindow(QtWidgets.QDialog):
                     note = (" - the rig is animated and has no recorded bind "
                             "pose; put it at bind and press Remember bind pose")
                 else:
-                    core.capture_bind_pose(root)
-                    primed = core.prime_references(root)
+                    with core.undo_chunk("measure rig"):
+                        core.capture_bind_pose(root)
+                        primed = core.prime_references(root)
                     note = (" - bind pose recorded"
                             + (" and reference measured" if primed else ""))
         except Exception as error:
             self.lbl_target.setText("Cannot read that hierarchy: %s" % error)
         self._refresh_retarget_button()
-        if note:
+        try:
+            self._load_poses(root)
+        except Exception:
+            self._solve, self._poses = None, {}
+            traceback.print_exc()
+        self._refresh_poses()
+        if note and not quiet:
             self._say(self.lbl_target.text() + note)
 
     def _remember_bind_pose(self):
@@ -1161,13 +1755,18 @@ class AZKimodoMotionWindow(QtWidgets.QDialog):
         if not target or not cmds.objExists(target):
             self._say("Set the target rig first.")
             return
-        try:
-            pose = core.capture_bind_pose(target)
-        except Exception as error:
-            self._say("Could not record the bind pose: %s" % error)
-            traceback.print_exc()
-            return
-        primed = core.prime_references(target)
+        with core.undo_chunk("measure rig"):
+            try:
+                pose = core.capture_bind_pose(target)
+            except Exception as error:
+                self._say("Could not record the bind pose: %s" % error)
+                traceback.print_exc()
+                return
+            primed = core.prime_references(target)
+            try:
+                core.measure_body(target)
+            except Exception:
+                traceback.print_exc()
         self._say("Recorded the bind pose of %s (%d nodes)%s. Every retarget "
                   "and pin is measured from it, so re-record it only if the "
                   "rig's bind pose really changes."
@@ -1176,35 +1775,56 @@ class AZKimodoMotionWindow(QtWidgets.QDialog):
 
     def _refresh_retarget_button(self):
         self.btn_retarget.setEnabled(
-            bool(self._last_take and self.line_target.text().strip()))
+            bool(self._last_take and self.line_target.text().strip()
+                 and self._process is None))
 
-    def _retarget(self):
+    def _retarget(self, _checked=False, mode=None):
+        cmds.undoInfo(openChunk=True, chunkName="AZ Kimodo Motion retarget")
+        try:
+            return self._retarget_take(mode)
+        finally:
+            cmds.undoInfo(closeChunk=True)
+
+    def _retarget_take(self, mode):
+        if self._process is not None:
+            self._say("A solve is already running.")
+            return False
         if not self._last_take:
             self._say("Generate or import a take first.")
-            return
+            return False
         target = self.line_target.text().strip()
         if not target or not cmds.objExists(target):
             self._say("Target root joint not found in the scene.")
-            return
+            return False
 
         take = self._last_take
+        poses = (self._pending or {}).get("poses", {})
+        # The same take baked again keeps what its poses say about Main.
+        if self._pending is None and self._baked and self._baked[0] is take:
+            poses = self._baked[1]["poses"]
         try:
-            cmds.undoInfo(openChunk=True, chunkName="AZ Kimodo Motion retarget")
-            try:
-                info = core.retarget(
-                    take["joints"], take["skeleton"], target,
-                    start_frame=take["start_frame"],
-                    frames=take["frames"],
-                    align_rest=self.chk_align.isChecked(),
-                    neck_damping=self.spin_neck.value(),
-                    mode=("replace" if self.cmb_mode.currentIndex() == 0
-                          else "append"))
-            finally:
-                cmds.undoInfo(closeChunk=True)
+            info = core.retarget(
+                take["joints"], take["skeleton"], target,
+                start_frame=take["start_frame"],
+                frames=take["frames"],
+                align_rest=self.chk_align.isChecked(),
+                neck_damping=self.spin_neck.value(),
+                foot_lock=self.chk_lock_feet.isChecked(),
+                ik_limbs=self._ik_limbs(),
+                main_poses=poses,
+                pose_accuracy=self._pose_accuracy / 100.0,
+                arm_clearance=(self.spin_arm_clearance.value()
+                               if self.chk_arms_out.isChecked() else None),
+                keep_frames=[core.take_frame_to_scene(frame,
+                                                      take["start_frame"])
+                             for frame, pin in poses.items()
+                             if pin.get("edited", True)],
+                mode=mode or ("replace" if self.cmb_mode.currentIndex() == 0
+                              else "append"))
         except Exception as error:
             self._say("Retarget failed: %s" % error)
             traceback.print_exc()
-            return
+            return False
 
         if self.chk_hide_source.isChecked():
             try:
@@ -1222,6 +1842,365 @@ class AZKimodoMotionWindow(QtWidgets.QDialog):
                      " (cached rest pose)" if info["reused_rest"] else "",
                      ("; unmapped: " + ", ".join(info["missing"]))
                      if info["missing"] else ""))
+
+        # Recorded here rather than where the solve ends, so a take baked by
+        # hand later is remembered the same way as one baked automatically.
+        pending, self._pending = self._pending, None
+        if pending:
+            self._baked = [take, copy.deepcopy(pending), None]
+            self._solve, self._poses = pending["solve"], pending["poses"]
+            if pending["edited_frame"] is None:
+                # A new take: nothing from the old one applies.
+                self._unapplied = set()
+                self._released = set()
+                self._poses_changed = False
+            self._store_poses()
+            # Undoing back past this point brings the take back as not yet baked.
+            self._baked[2] = self._stored
+            self._refresh_poses()
+        return True
+
+    # -- limbs ------------------------------------------------------------ #
+
+    def _ik_limbs(self):
+        return core.IK_LIMB_CHOICES[self.cmb_limbs.currentIndex()][1]
+
+    def _limbs_changed(self, index):
+        """Apply the choice to the animation already on the rig."""
+        cmds.optionVar(intValue=(LIMBS_OPTVAR, index))
+        target = self.line_target.text().strip()
+        if not (self._solve and target and cmds.objExists(target)):
+            return
+        if self._process is not None:
+            self._say("A solve is already running.")
+            return
+        solve = self._solve
+        which = self._ik_limbs()
+        try:
+            cmds.undoInfo(openChunk=True, chunkName="AZ Kimodo Motion limbs")
+            try:
+                core.clear_ik_keys(target)
+                core.set_limb_mode(target, ())
+                core.bake_ik(target, core.take_frame_to_scene(0, solve["start_frame"]),
+                             core.take_frame_to_scene(solve["frames"] - 1,
+                                                      solve["start_frame"]), which)
+                self._store_poses()
+            finally:
+                cmds.undoInfo(closeChunk=True)
+        except Exception as error:
+            self._say("Could not change the limbs: %s" % error)
+            traceback.print_exc()
+            return
+        self._say("Limbs baked to: %s." % core.IK_LIMB_CHOICES[index][0])
+
+    # -- pose analyzer ---------------------------------------------------- #
+
+    def _timeline_take_frame(self, start_frame):
+        scene = cmds.currentTime(query=True)
+        return int(round((scene - start_frame) * core.MODEL_FPS
+                         / core.scene_fps()))
+
+    def _pose_context(self):
+        """(target, solve) when poses can be worked on, else None after saying why."""
+        if self._process is not None:
+            self._say("A solve is already running.")
+            return None
+        target = self.line_target.text().strip()
+        if not target or not cmds.objExists(target):
+            self._say("No character in the scene - load one in CHARACTER.")
+            return None
+        if not self._solve:
+            self._say("Generate an animation from one prompt first - this rig "
+                      "has no record of a prompt to solve again.")
+            return None
+        return target, self._solve
+
+    def _analyze_poses(self):
+        context = self._pose_context()
+        if not context:
+            return
+        target, solve = context
+        kept = dict((frame, pin) for frame, pin in self._poses.items()
+                    if pin.get("edited", True))
+        frames = [frame for frame in core.pose_frames(
+                      solve["frames"], solve["start_frame"],
+                      self.spin_pose_step.value())
+                  if frame not in kept]
+        try:
+            poses = core.analyze_poses(target, frames, solve["start_frame"])
+        except Exception as error:
+            self._say("Could not read the animation: %s" % error)
+            traceback.print_exc()
+            return
+        poses.update(kept)
+        self._poses = poses
+        self._store_poses()
+        self._refresh_poses()
+        self._show_pose_dialog()
+        self._say("%d poses on the timeline. Click one to go to it." % len(poses))
+
+    def _store_poses(self):
+        target = self.line_target.text().strip()
+        if target and cmds.objExists(target):
+            core.remember_solve(target, self._solve, self._poses, self._unapplied,
+                                self._released, self._poses_changed,
+                                self.cmb_limbs.currentIndex())
+            self._stored = core.solve_text(target)
+
+    def _load_poses(self, target):
+        self._solve, self._poses = core.read_solve(target)
+        core.settle_old_poses(target, self._solve, self._poses)
+        self._unapplied, self._released, self._poses_changed, limbs = \
+            core.read_pose_state(target)
+        self._stored = core.solve_text(target)
+        if limbs is not None and limbs != self.cmb_limbs.currentIndex():
+            # The rig already is this way, so nothing is to be baked.
+            self.cmb_limbs.blockSignals(True)
+            self.cmb_limbs.setCurrentIndex(limbs)
+            self.cmb_limbs.blockSignals(False)
+            cmds.optionVar(intValue=(LIMBS_OPTVAR, limbs))
+
+    def _refresh_poses(self):
+        """Bring the timeline marks and the pose list in line with the poses."""
+        start = self._solve["start_frame"] if self._solve else 1
+        try:
+            if self._poses:
+                core.set_pose_marks(
+                    [(core.take_frame_to_scene(frame, start),
+                      pin.get("edited", True))
+                     for frame, pin in sorted(self._poses.items())])
+            else:
+                core.clear_pose_marks()
+        except Exception:
+            # The marks only show what the list already says.
+            traceback.print_exc()
+        self.btn_pose_list.setEnabled(bool(self._poses))
+        if self._pose_dialog is not None:
+            self._pose_dialog.refresh()
+
+    def _show_pose_dialog(self):
+        if self._pose_dialog is None:
+            self._pose_dialog = _PoseDialog(self)
+            self._pose_dialog.set_running(self._process is not None)
+        self._pose_dialog.refresh()
+        self._pose_dialog.show()
+        self._pose_dialog.raise_()
+
+    def _capture_pose(self, target, solve, frame):
+        # The box describes the selected row, and reading the take below hops the
+        # timeline, which moves the selection and the box with it. So this first.
+        old = self._poses.get(frame, {})
+        dialog = self._pose_dialog
+        if (dialog is not None and dialog.isVisible()
+                and dialog._selected() in (frame, None)):
+            holds = dialog.chk_main_stays.isChecked()
+        else:
+            holds = bool(old.get("main_hold"))
+        with core.quietly():
+            pin = core.capture_pose_from_rig(target, frame, "full")
+            pin["main_above"] = core.pose_main_above(
+                target, self._poses, frame, solve["start_frame"])
+            # Read before the fit, which moves the timeline to see the curves.
+            drag, placed = core.main_place(target)
+            if self.chk_keep_path.isChecked():
+                if placed:
+                    # The drag is handed over separately, not as part of the pose.
+                    core.drop_main_drag(pin, drag)
+                turn_drag, facing = core.main_turn(target)
+                anchor = core.take_pose_at(target, frame)
+                # As with height below: a solved pose keeps the way it was asked
+                # to face, not the way the model got round to.
+                turn_short = 0.0
+                if old.get("edited"):
+                    turn_short = (old.get("turn_short", 0.0)
+                                  if frame in self._unapplied
+                                  else core.heading_gap(old, anchor))
+                pin = core.fit_pose_to_take(pin, anchor,
+                                            turn_more=turn_drag + turn_short)
+                # Updating a solved pose keeps what was asked, not what the model
+                # reached. Updating it again before the solve adds the same amount.
+                if old.get("edited"):
+                    extra = (old.get("short_by", 0.0) if frame in self._unapplied
+                             else old["root"][1] - old.get("reached", old["root"][1]))
+                    root = list(pin["root"])
+                    root[1] += extra
+                    pin["root"] = root
+                    pin["short_by"] = extra
+                if placed:
+                    pin["main_target"] = placed
+                    pin["main_hold"] = holds
+                    pin["main_turn"] = facing
+                    pin["turn_short"] = turn_short
+                    if abs(turn_drag) > 0.1:
+                        pin["place_turn"] = turn_drag
+                    if pin.get("scene_root"):
+                        pin["scene_root"] = [v + d for v, d in zip(pin["scene_root"], drag)]
+                    if any(abs(value) > 0.01 for value in drag):
+                        pin["place"] = drag
+            elif placed and holds:
+                pin["main_target"] = placed
+                pin["main_hold"] = True
+        pin["edited"] = True
+        # RECALCULATE reads an un-keyed pose again in case it was changed after
+        # Update. If it was not, the pose and the undo queue stay as they are.
+        if frame in self._unapplied and core.same_pose(pin, old):
+            return
+        self._poses[frame] = pin
+        self._unapplied.add(frame)
+        self._poses_changed = True
+        self._store_poses()
+        self._refresh_poses()
+
+    def _new_pose(self):
+        context = self._pose_context()
+        if not context:
+            return
+        target, solve = context
+        frame = self._timeline_take_frame(solve["start_frame"])
+        if not 0 <= frame < solve["frames"]:
+            self._say("The timeline is outside the take, which runs from "
+                      "frame %d to %d."
+                      % (core.take_frame_to_scene(0, solve["start_frame"]),
+                         core.take_frame_to_scene(solve["frames"] - 1,
+                                                  solve["start_frame"])))
+            return
+        try:
+            self._capture_pose(target, solve, frame)
+        except Exception as error:
+            self._say("Could not read the pose: %s" % error)
+            traceback.print_exc()
+            return
+        self._say("Pose kept on this frame. Go on to the next, or press "
+                  "RECALCULATE.")
+
+    def _update_pose(self, frame):
+        context = self._pose_context()
+        if not context:
+            return
+        target, solve = context
+        if self._timeline_take_frame(solve["start_frame"]) != frame:
+            self._say("The timeline has moved off this pose. Click the pose, "
+                      "adjust it, then press Update.")
+            return
+        try:
+            self._capture_pose(target, solve, frame)
+        except Exception as error:
+            self._say("Could not read the pose: %s" % error)
+            traceback.print_exc()
+            return
+        self._say("Pose updated. Press RECALCULATE when the poses are ready.")
+
+    def _open_pose(self, frame):
+        """Go to a pose and show it on the character and its controls."""
+        start = self._solve["start_frame"] if self._solve else 1
+        cmds.undoInfo(openChunk=True, chunkName="AZ Kimodo Motion go to pose")
+        try:
+            cmds.currentTime(core.take_frame_to_scene(frame, start), edit=True)
+            if frame in self._unapplied:
+                try:
+                    core.load_pose_on_rig(self.line_target.text().strip(),
+                                          self._poses[frame])
+                except Exception as error:
+                    self._say("Could not show the pose: %s" % error)
+                    traceback.print_exc()
+                    return
+        finally:
+            cmds.undoInfo(closeChunk=True)
+        self._say("Adjust it with the controls and press Update, or Delete.")
+
+    def _delete_pose(self, frame):
+        if self._process is not None:
+            self._say("A solve is already running.")
+            return
+        pin = self._poses.pop(frame, None)
+        if pin is None:
+            return
+        if frame in self._unapplied:
+            self._unapplied.discard(frame)
+            # It may still be on the controls, unkeyed, and Recalculate would
+            # take it for a new pose.
+            with core.quietly():
+                now = cmds.currentTime(query=True)
+                cmds.currentTime(now + 1, edit=True)
+                cmds.currentTime(now, edit=True)
+        elif pin.get("edited", True):
+            self._released.add(frame)
+        self._poses_changed = True
+        self._store_poses()
+        self._refresh_poses()
+        self._say("Pose deleted. Press RECALCULATE when the poses are ready.")
+
+    def _pose_accuracy_changed(self, value):
+        self._pose_accuracy = value
+        # The poses are the same, but what the bake does with them is not.
+        if self._poses:
+            self._poses_changed = True
+
+    def _recalculate(self):
+        context = self._pose_context()
+        if not context:
+            return
+        target, solve = context
+        try:
+            # A pose made but not kept is still on the controls. Read it first:
+            # nothing below may move the timeline before it is safe.
+            if core.has_unkeyed_pose(target):
+                frame = self._timeline_take_frame(solve["start_frame"])
+                if 0 <= frame < solve["frames"]:
+                    self._capture_pose(target, solve, frame)
+            if not self._poses_changed:
+                self._say("No pose has changed, so there is nothing to "
+                          "recalculate.")
+                return
+            placed = core.warp_pose_roots(self._poses, target, solve["start_frame"],
+                                          self._released)
+            pins = core.pose_pins(placed, self._released)
+            if not pins:
+                self._say("No poses left. Press ANALYZE POSES, or GENERATE "
+                          "MOTION for a fresh take.")
+                return
+            self._take_dir = core.new_take_dir(self._install["root"])
+            hard = any(pin.get("mode") in core.PIN_MODES_NEEDING_HARD
+                       for pin in pins)
+            argv = core.build_constrain_command(
+                solve["model"], self._take_dir, solve["prompt"],
+                solve["frames"], solve["steps"], solve["seed"], pins,
+                self._install["root"], pin_weight=core.EDIT_PIN_WEIGHT,
+                hard=hard)
+        except Exception as error:
+            self._say("Could not recalculate: %s" % error)
+            traceback.print_exc()
+            return
+
+        self.spin_start.setValue(solve["start_frame"])
+        back_to = self._timeline_take_frame(solve["start_frame"])
+        self._inflight = {"solve": solve, "poses": placed,
+                          "edited_frame": back_to, "stored": self._stored}
+        self._embed_prompt = solve["prompt"]
+        self._launch(argv)
+
+    def _after_recalculate(self, target, frame):
+        """The animation changed, so the poses that describe it are read again."""
+        solve = self._solve
+        self._unapplied = set()
+        self._released = set()
+        self._poses_changed = False
+        fresh = [f for f, pin in self._poses.items() if not pin.get("edited", True)]
+        edited = [f for f in self._poses if f not in fresh]
+        try:
+            self._poses.update(core.analyze_poses(target, fresh,
+                                                  solve["start_frame"]))
+            # Soft pins fall a little short. Remembered for the next Update of
+            # the pose, since auto key can change the curves before then.
+            reached = core.analyze_poses(target, edited, solve["start_frame"])
+            for f in edited:
+                self._poses[f]["reached"] = reached[f]["root"][1]
+        except Exception:
+            traceback.print_exc()
+        self._store_poses()
+        self._refresh_poses()
+        cmds.currentTime(core.take_frame_to_scene(frame, solve["start_frame"]),
+                         edit=True)
 
     # -- pose pins -------------------------------------------------------- #
 
@@ -1252,8 +2231,8 @@ class AZKimodoMotionWindow(QtWidgets.QDialog):
         target = self.line_target.text().strip()
         if from_target:
             if not target or not cmds.objExists(target):
-                self._say("Set the target rig in RETARGET first, or read from "
-                          "the pose rig.")
+                self._say("No character in the scene - load one in CHARACTER, "
+                          "or read from the pose rig.")
                 return
         else:
             rig = core.find_pose_rig()
@@ -1306,7 +2285,7 @@ class AZKimodoMotionWindow(QtWidgets.QDialog):
         rig = None
         if from_target:
             if not target or not cmds.objExists(target):
-                self._say("Set the target rig in RETARGET first.")
+                self._say("No character in the scene - load one in CHARACTER.")
                 return
         else:
             rig = core.find_pose_rig()
@@ -1366,9 +2345,7 @@ class AZKimodoMotionWindow(QtWidgets.QDialog):
                      len(self._pins)))
 
     def _insert_here(self):
-        scene = cmds.currentTime(query=True)
-        frame = int(round((scene - self.spin_start.value())
-                          * core.MODEL_FPS / core.scene_fps()))
+        frame = self._timeline_take_frame(self.spin_start.value())
         mode = core.PIN_MODE_KEYS[self.cmb_pin_mode.currentIndex()]
         self._add_or_replace(frame, mode, "Inserted a pose at")
 
@@ -1422,7 +2399,7 @@ class AZKimodoMotionWindow(QtWidgets.QDialog):
             if self.cmb_pin_source.currentIndex() == 1:
                 target = self.line_target.text().strip()
                 if not target or not cmds.objExists(target):
-                    raise RuntimeError("set the target rig in RETARGET first")
+                    raise RuntimeError("no character in the scene - load one in CHARACTER")
                 return core.capture_pose_from_rig(target, frame, mode)
             rig = core.find_pose_rig()
             if rig is None:
@@ -1609,6 +2586,9 @@ class AZKimodoMotionWindow(QtWidgets.QDialog):
         self.lbl_pin_mode.setText(text)
 
     def _clear_rig(self):
+        if self._process is not None:
+            self._say("A solve is already running.")
+            return
         target = self.line_target.text().strip()
         if not target or not cmds.objExists(target):
             self._say("Set the target rig first.")
@@ -1617,13 +2597,19 @@ class AZKimodoMotionWindow(QtWidgets.QDialog):
             cmds.undoInfo(openChunk=True, chunkName="AZ Kimodo Motion clear rig")
             try:
                 info = core.clear_rig(target)
+                core.prime_references(target)
             finally:
                 cmds.undoInfo(closeChunk=True)
         except Exception as error:
             self._say("Could not clear the rig: %s" % error)
             traceback.print_exc()
             return
-        core.prime_references(target)
+        self._stored = core.solve_text(target)
+        self._solve, self._poses = None, {}
+        self._unapplied = set()
+        self._released = set()
+        self._poses_changed = False
+        self._refresh_poses()
         blends = info.get("blends_restored") or []
         self._say("Cleared %d animated channels%s%s - the next retarget will "
                   "measure the rig fresh, so put it in its bind pose first."
@@ -1645,12 +2631,95 @@ class AZKimodoMotionWindow(QtWidgets.QDialog):
                 traceback.print_exc()
         self._refresh_retarget_button()
 
+    # -- undo ------------------------------------------------------------- #
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if om2 is not None and not self._undo_callbacks:
+            self._undo_callbacks = [
+                om2.MEventMessage.addEventCallback(name, self._undo_happened, name)
+                for name in ("Undo", "Redo")]
+
+    def _stop_watching_undo(self):
+        callbacks, self._undo_callbacks = self._undo_callbacks, []
+        for callback in callbacks:
+            om2.MMessage.removeCallback(callback)
+
+    def _undo_happened(self, event):
+        # Maya is still inside the undo here, so the marks wait until it is out.
+        QtCore.QTimer.singleShot(0, lambda: self._follow_undo(event))
+
+    def _follow_undo(self, event):
+        """Undo moved the scene under the tool: take the poses back from the rig."""
+        try:
+            target = self.line_target.text().strip()
+        except RuntimeError:
+            self._stop_watching_undo()
+            return
+        if self._last_take and not cmds.objExists(self._last_take.get("top") or ""):
+            self._last_take = None
+            self._refresh_retarget_button()
+        if not target or not cmds.objExists(target):
+            # The character itself was undone.
+            if self._solve or self._poses:
+                self._solve, self._poses = None, {}
+                self._unapplied, self._released = set(), set()
+                self._poses_changed = False
+                self._stored = ""
+                self._refresh_poses()
+            return
+        if core.solve_text(target) == self._stored:
+            return
+        before = set(self._unapplied)
+        baked_state = self._stored
+        self._load_poses(target)
+        if event == "Redo" and self._pending is self._armed:
+            self._pending = None
+        # An undo of the bake itself leaves its take in the scene to bake again.
+        if (event == "Undo" and self._baked and not self._pending
+                and baked_state == self._baked[2]):
+            take, pending = self._baked[:2]
+            if cmds.objExists(take.get("top") or ""):
+                self._last_take, self._pending = take, copy.deepcopy(pending)
+                self._armed = self._pending
+                self._refresh_retarget_button()
+        self._refresh_poses()
+        # Whatever the status said was about the step just taken back.
+        self._say("Undone." if event == "Undo" else "Redone.")
+        if not self._solve:
+            return
+        frame = self._timeline_take_frame(self._solve["start_frame"])
+        try:
+            with core.quietly():
+                if event == "Undo":
+                    # The delete of a pose nobody baked took it off the controls,
+                    # so undoing the delete puts it back on them.
+                    if (frame in self._unapplied and frame not in before
+                            and frame in self._poses):
+                        core.load_pose_on_rig(target, self._poses[frame])
+                elif frame in before and frame not in self._unapplied:
+                    # Redo of that delete takes it off again. Only redo: on undo
+                    # this would wipe a pose the animator is still working on.
+                    now = cmds.currentTime(query=True)
+                    cmds.currentTime(now + 1, edit=True)
+                    cmds.currentTime(now, edit=True)
+        except Exception:
+            traceback.print_exc()
+
     def closeEvent(self, event):
-        if self._process is not None:
-            self._process.kill()
-            self._process = None
+        self._stop_watching_undo()
+        if self._pose_dialog is not None:
+            self._pose_dialog.close()
+        process, self._process = self._process, None
+        if process is not None:
+            process.finished.disconnect(self._on_finished)
+            process.errorOccurred.disconnect(self._on_error)
+            process.kill()
+            process.waitForFinished(3000)
+            process.deleteLater()
+            core.discard_unfinished_take(self._take_dir)
         self._timer.stop()
-        super(AZKimodoMotionWindow, self).closeEvent(event)
+        super().closeEvent(event)
 
 
 # --------------------------------------------------------------------------- #
@@ -1672,12 +2741,17 @@ def show():
     if cmds is None:
         print("Run this tool inside Maya.")
         return None
-    try:
-        if _WIN is not None:
-            _WIN.close()
-            _WIN.deleteLater()
-    except Exception:
-        pass
+    for widget in QtWidgets.QApplication.topLevelWidgets():
+        if widget.objectName() != WINDOW_OBJECT_NAME:
+            continue
+        # Opening the tool again must not kill a solve it is waiting for.
+        if getattr(widget, "_process", None) is not None:
+            _WIN = widget
+            _WIN.show()
+            _WIN.raise_()
+            return _WIN
+        widget.close()
+        widget.deleteLater()
     global UI_VERSION
     UI_VERSION = getattr(core, "VERSION", "?")
     _WIN = AZKimodoMotionWindow(parent=_maya_main_window())
