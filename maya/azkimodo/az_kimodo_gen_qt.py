@@ -60,6 +60,12 @@ _LOGO_CANDIDATES = (
     os.path.join(_HERE, "az_logo.png"),
 )
 _CHECK_SVG_PATH = os.path.join(_HERE, "_azkim_check.svg")
+_ICON_PATH = os.path.join(_HERE, "az_kimodo_icon.png")
+SITE_URL = "https://aztools.xyz"
+SHELF_LABEL = "AZ Kimodo Motion"
+# Advanced settings: model, solver, scene, manual pins, retarget options. A
+# build for newcomers hides it - everything on screen works on its defaults.
+SHOW_ADVANCED = False
 
 _WIN = None
 
@@ -328,6 +334,17 @@ def _group(title):
     return box, outer
 
 
+def _site_link():
+    """The author's site, small and quiet, opening in the browser."""
+    link = _label('<a href="%s" style="color:#7ea6d8;text-decoration:none;">%s</a>'
+                  % (SITE_URL, SITE_URL.split("//")[-1]))
+    link.setOpenExternalLinks(True)
+    link.setToolTip("More tools by %s" % AUTHOR)
+    link.setStyleSheet("font-size:9px;")
+    link.setAlignment(QtCore.Qt.AlignRight)
+    return link
+
+
 def _progress_bar():
     bar = QtWidgets.QProgressBar()
     bar.setFixedHeight(14)
@@ -487,7 +504,7 @@ class _HelpDialog(QtWidgets.QDialog):
         layout.addWidget(browser)
         footer = _label("%s - AZ Kimodo Motion v%s" % (AUTHOR, UI_VERSION))
         footer.setStyleSheet("color:#7d828c;font-size:9px;")
-        layout.addWidget(footer)
+        layout.addWidget(_row(footer, None, _site_link()))
 
 
 # --------------------------------------------------------------------------- #
@@ -676,6 +693,8 @@ class AZKimodoMotionWindow(QtWidgets.QDialog):
         self.setMinimumWidth(400)
         self.resize(430, 780)
         self.setStyleSheet(_build_stylesheet())
+        if os.path.isfile(_ICON_PATH):
+            self.setWindowIcon(QtGui.QIcon(_ICON_PATH))
 
         self._help_dialog = None
         self._segments = []
@@ -723,6 +742,7 @@ class AZKimodoMotionWindow(QtWidgets.QDialog):
         self.lbl_status.setStyleSheet("color:#7d828c;font-size:9px;")
         self.lbl_status.setWordWrap(True)
         root.addWidget(self.lbl_status)
+        root.addWidget(_site_link())
 
         self._add_segment()
         # Pose to pose counts its frames from the take's start frame, which
@@ -825,11 +845,13 @@ class AZKimodoMotionWindow(QtWidgets.QDialog):
             self._import_folder))
         advanced.setVisible(False)
 
-        toggle = _btn("Advanced settings", "sm",
-                      "Model, solver, scene, manual pose pins, retarget options")
-        toggle.setCheckable(True)
-        toggle.toggled.connect(advanced.setVisible)
-        layout.addWidget(toggle)
+        # Built either way: the rest of the window reads its defaults.
+        if SHOW_ADVANCED:
+            toggle = _btn("Advanced settings", "sm",
+                          "Model, solver, scene, manual pose pins, retarget options")
+            toggle.setCheckable(True)
+            toggle.toggled.connect(advanced.setVisible)
+            layout.addWidget(toggle)
         layout.addWidget(advanced)
         layout.addStretch(1)
 
@@ -1151,6 +1173,21 @@ class AZKimodoMotionWindow(QtWidgets.QDialog):
             _btn("Load", "sm",
                  "Import the rig file now, even if a character is already in "
                  "the scene", self._load_character)))
+        # Here rather than with the retarget options, so they are at hand when
+        # Advanced settings is hidden.
+        tools.addWidget(_row(
+            _btn("Remember bind pose", "sm",
+                 "Record the rig's current pose as the reference every\n"
+                 "retarget and pin is measured against. Done by itself when\n"
+                 "the character arrives; press it only for a rig that came in\n"
+                 "another way - and only while it stands at bind.",
+                 self._remember_bind_pose),
+            _btn("Clear rig animation", "danger",
+                 "Wipe the baked keys and the cached reference pose.\n"
+                 "Use this if the first retarget ran on a rig that was not in\n"
+                 "its bind pose - that wrong reference is reused by every\n"
+                 "later take.",
+                 self._clear_rig)))
         return box
 
     def _build_retarget_group(self):
@@ -1213,20 +1250,6 @@ class AZKimodoMotionWindow(QtWidgets.QDialog):
                                  self._retarget)
         self.btn_retarget.setEnabled(False)
         layout.addWidget(self.btn_retarget)
-
-        layout.addWidget(_row(
-            _btn("Remember bind pose", "sm",
-                 "Record the rig's current pose as the reference every\n"
-                 "retarget and pin is measured against. Done by itself when\n"
-                 "the character arrives; press it only for a rig that came in\n"
-                 "another way - and only while it stands at bind.",
-                 self._remember_bind_pose),
-            _btn("Clear rig animation", "danger",
-                 "Wipe the baked keys and the cached reference pose.\n"
-                 "Use this if the first retarget ran on a rig that was not in\n"
-                 "its bind pose - that wrong reference is reused by every\n"
-                 "later take.",
-                 self._clear_rig)))
         return box
 
     def _build_action_group(self):
@@ -1471,8 +1494,8 @@ class AZKimodoMotionWindow(QtWidgets.QDialog):
         start = self._key_start()
         frame = self._timeline_take_frame(start)
         if frame < 0:
-            self._say("The timeline is before the take, which starts on frame %d "
-                      "(Start frame in Advanced settings)." % start)
+            self._say("The timeline is before the take, which starts on frame %d."
+                      % start)
             return
         if frame >= core.MAX_FRAMES:
             self._say("This frame is past the longest take, which ends on frame %d."
@@ -2135,7 +2158,7 @@ class AZKimodoMotionWindow(QtWidgets.QDialog):
                             "are taken as bind" if core.bind_from_controls(root)
                             else " - the rig is animated and has no recorded "
                             "bind pose; put it at bind and press Remember bind "
-                            "pose")
+                            "pose under Change...")
                 else:
                     with core.undo_chunk("measure rig"):
                         core.capture_bind_pose(root)
@@ -3178,6 +3201,38 @@ class AZKimodoMotionWindow(QtWidgets.QDialog):
 # --------------------------------------------------------------------------- #
 # Entry point
 # --------------------------------------------------------------------------- #
+
+def install_shelf_button():
+    """Put a button that opens the tool, with its icon, on the open shelf.
+
+    Run it once. A button already there is brought up to date instead of
+    doubled. Returns the button's name.
+    """
+    import maya.mel as mel
+    shelves = mel.eval("$azkimTmp = $gShelfTopLevel")
+    shelf = cmds.tabLayout(shelves, query=True, selectTab=True)
+    # Whichever package this copy was installed under.
+    package = __name__.rpartition(".")[0]
+    command = ("from %s import az_kimodo_gen_qt\naz_kimodo_gen_qt.show()"
+               % package if package else
+               "import az_kimodo_gen_qt\naz_kimodo_gen_qt.show()")
+    image = _ICON_PATH.replace("\\", "/") if os.path.isfile(_ICON_PATH) \
+        else "pythonFamily.png"
+    for button in cmds.shelfLayout(shelf, query=True, childArray=True) or []:
+        if (cmds.objectTypeUI(button) == "shelfButton"
+                and cmds.shelfButton(button, query=True, label=True) == SHELF_LABEL):
+            cmds.shelfButton(button, edit=True, image=image, command=command,
+                             sourceType="python")
+            print("[AZ Kimodo Motion %s] updated the button on shelf %s"
+                  % (UI_VERSION, shelf))
+            return button
+    button = cmds.shelfButton(parent=shelf, label=SHELF_LABEL,
+                              annotation="AZ Kimodo Motion - text-to-motion",
+                              image=image, imageOverlayLabel="", command=command,
+                              sourceType="python")
+    print("[AZ Kimodo Motion %s] added a button to shelf %s" % (UI_VERSION, shelf))
+    return button
+
 
 def show():
     # The tool is two files. Reloading only this one leaves the previous

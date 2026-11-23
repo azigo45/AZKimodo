@@ -23,9 +23,15 @@ Launch in Maya:
     from azkimodo import az_kimodo_gen_qt
     az_kimodo_gen_qt.show()
 
-VERSION 1.48.1
+VERSION 1.49.0
 
 History
+    1.49.0 An icon of its own, on the window and on the shelf button that
+           install_shelf_button() puts on the open shelf. A link to
+           aztools.xyz under the status line and in the help. Remember bind
+           pose and Clear rig animation moved to CHARACTER > Change..., so
+           they stay at hand in a build that hides Advanced settings, as the
+           public one does.
     1.48.1 Pose to pose fits the timeline to the take it can make: from the
            start frame to the longest take, with the current frame moved
            inside. A pose could not go before the start frame and the
@@ -358,7 +364,7 @@ except Exception:
     mel = None
     om2 = None
 
-VERSION = "1.48.1"
+VERSION = "1.49.0"
 
 def _default_root():
     """The first kimodo.cpp checkout on any drive, else C:/kimodo.cpp.
@@ -4251,7 +4257,8 @@ def capture_reference_rest(target_root, skeleton, target_key="", bind_root=None,
         raise RuntimeError(
             "the rig carries animation, so its bind pose cannot be measured "
             "now. Retarget a take once (that caches the reference), or press "
-            "Clear rig animation while it should be at bind.")
+            "Clear rig animation under CHARACTER > Change... while it should be "
+            "at bind.")
 
     rotate_orders = [cmds.getAttr(target + ".rotateOrder") for target in targets]
     scale = scene_scale()
@@ -4268,7 +4275,7 @@ def capture_reference_rest(target_root, skeleton, target_key="", bind_root=None,
     if not restore_bind_pose(bind_root):
         raise RuntimeError(
             "no bind pose is recorded for %s. Put the rig at bind and press "
-            "Remember bind pose in the RETARGET group - the reference is "
+            "Remember bind pose under CHARACTER > Change... - the reference is "
             "measured from it." % bind_root.split("|")[-1])
     try:
         # Only now, with the rig actually at bind, do the hips mean anything.
@@ -4464,7 +4471,8 @@ def ensure_character(path=None):
             notes.append("no recorded bind pose - its controls at zero are "
                          "taken as bind" if bind_from_controls(root) else
                          "the rig is animated and has no recorded bind pose - "
-                         "put it at bind and press Remember bind pose")
+                         "put it at bind and press Remember bind pose under "
+                         "Change...")
         else:
             with undo_chunk("measure rig"):
                 capture_bind_pose(root)
