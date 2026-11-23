@@ -8,7 +8,7 @@ AZKimodo is the complete build around [kimodo.cpp](https://github.com/localai-or
 |---|---|---|
 | **`kimodo.bat`** | One-file Windows installer and launcher. Bare machine → GPU build → web demo in the browser. | this repo, [Releases](../../releases/latest) |
 | **Engine fork** | kimodo.cpp with pose-constrained generation (`kmd-constrain`), hard pinning, weighted masks and a ~5× faster denoiser. | [azigo45/kimodo.cpp](https://github.com/azigo45/kimodo.cpp) |
-| **AZ Kimodo Motion** | Maya tool: generate from text, bake onto an Advanced Skeleton rig (FK or IK), correct the poses on the timeline, recalculate. | `azkimodo-maya-1.44.1.zip` in [Releases](../../releases/latest), source in `maya/azkimodo/` |
+| **AZ Kimodo Motion** | Maya tool: generate from text or from poses you key by hand, bake onto an Advanced Skeleton rig or an AZ Body Rig (FK or IK), correct the poses on the timeline, recalculate. | `azkimodo-maya-1.48.1.zip` in [Releases](../../releases/latest), source in `maya/azkimodo/` |
 
 Built by **Alexander Antonov — AzRigTool**. Not affiliated with NVIDIA or LocalAI.
 
@@ -68,7 +68,7 @@ Developed on Maya 2025 for Windows. Needs the engine from section 1.
 
 ### Install
 
-1. Download **`azkimodo-maya-1.44.1.zip`** from the [latest release](../../releases/latest) and unpack it.
+1. Download **`azkimodo-maya-1.48.1.zip`** from the [latest release](../../releases/latest) and unpack it.
 2. Copy the **`azkimodo`** folder into `Documents\maya\2025\scripts\`. You should end up with `Documents\maya\2025\scripts\azkimodo\az_kimodo_gen.py`.
 3. Start or restart Maya.
 4. Open the Script Editor, paste this into a **Python** tab and run it:
@@ -78,7 +78,7 @@ from azkimodo import az_kimodo_gen_qt
 az_kimodo_gen_qt.show()
 ```
 
-The window opens with `v1.44.1` in its header. For a shelf button, select those two lines and drag them to a shelf with the middle mouse button.
+The window opens with `v1.48.1` in its header. For a shelf button, select those two lines and drag them to a shelf with the middle mouse button.
 
 The tool finds the engine by itself: `AZ_KIMODO_ROOT` if you set that environment variable, otherwise the first `<drive>:\kimodo.cpp` it sees, which is the default folder of `kimodo.bat`. Installed somewhere else? Set `AZ_KIMODO_ROOT` to that folder and restart Maya.
 
@@ -89,13 +89,14 @@ The tool finds the engine by itself: `AZ_KIMODO_ROOT` if you set that environmen
 The tool drives rigs it recognises by name:
 
 - **Advanced Skeleton** controls: `RootX_M`, `FKChest_M`, `FKWrist_L`, `FKKnee_R`, `FKToes_L`, and the rest of the standard set.
+- **AZ Body Rig** controls: `C_main_CTRL`, `C_root_CTRL`, `C_chest_FK_CTRL`, `L_wrist_FK_CTRL`, `R_knee_FK_CTRL`, `L_ball_FK_CTRL`, and the rest. Any spine length works.
 - **UE5 Mannequin** skeleton: `pelvis`, `spine_05`, `clavicle_l`, `thigh_r`, `ball_l`, and the rest.
 
-No rig ships with the tool. Open your rig's scene first and the tool picks the rig up when its window opens. Otherwise press **Change...** in CHARACTER, then pick the rig file and press **Load**, or select the rig and press **Use selected**. The rig should stand in its bind pose when it first arrives, because that pose becomes the reference for every bake.
+No rig ships with the tool. Open your rig's scene first and the tool picks the rig up when its window opens. Otherwise press **Change...** in CHARACTER, then pick the rig file and press **Load**, or select any node of the rig and press **Use selected**. The rig should stand in its bind pose when it first arrives, because that pose becomes the reference for every bake.
 
 ### Use it
 
-1. **Generate.** Write a prompt in English, third person, naming the side: *A person throws a fast front kick with their right leg and plants the foot back down.* Choose **Bake limbs to** (FK, or IK legs and arms), then press **GENERATE MOTION**. Maya stays responsive while the GPU works, and the take lands on the controls.
+1. **Generate.** On the **PROMPT** tab write a prompt in English, third person, naming the side: *A person throws a fast front kick with their right leg and plants the foot back down.* Choose **Bake to** — FK controls, or IK for the legs, the arms and, on AZ Body Rig, the spine — then press **GENERATE MOTION**. Maya stays responsive while the GPU works, and the take lands on the controls. **Bake to** can be changed afterwards without generating again.
 2. **Read the poses.** Set the step and press **ANALYZE POSES**. The frames are marked on the timeline and the pose list opens.
 3. **Correct them.** Click a pose to go to its frame, adjust the controls and press **Update**. **New pose here** adds a pose on the current frame, **Delete** removes the selected one.
 4. **Place the character with `Main`.** Drag it on the ground and the character goes there and stays. Lift it for a jump, or turn on **Main stays at this height** for a step up. Turn it and the character faces that way from that pose on.
@@ -103,11 +104,24 @@ No rig ships with the tool. Open your rig's scene first and the tool picks the r
 
 **Pose accuracy** in the pose list sets how closely the poses you edited are followed: 100 hits them, easing in and out over half a second around each one; 0 keeps what the model made. Lower it if the motion looks forced around a pose. It applies only to poses you edited, and takes effect when you press RECALCULATE.
 
+A pose whose hips were turned round by accident while the IK hands stayed put is refused with an explanation: turn `Main` to turn the character.
+
+### Pose to pose
+
+The **POSE TO POSE** tab, next to PROMPT, is animation by hand with no prompt.
+
+1. Open the tab. The timeline is set to the frames a take can cover, from the start frame on; the old range returns when you go back to PROMPT.
+2. Go to a frame, pose the character with its controls and press **New pose here**. The pose is listed in the tab and keyed on every channel you moved, and on every channel that was already animated.
+3. Click a pose to go back to it — it is put on the character again, where it stood — adjust it and press **Update**, or **Delete** it together with its keys.
+4. With two poses or more, press **GENERATE MOTION**. The motion between them is filled in, from the start frame to the last pose, and baked. **Pose accuracy** sets how closely the poses are hit.
+
+Afterwards the poses are the take's pose list, so ANALYZE POSES and RECALCULATE carry on from there. The poses are stored on the rig and come back when the scene is opened again.
+
 Everything else lives under **Advanced settings**: model, solver steps and seed, manual pose pins with holds, arm clearance for characters whose arms cut into the body, foot locking. The **?** button in the header opens the built-in help.
 
 ### Limits
 
-- One take is at most 150 frames (5 seconds at the model's 30 Hz). Chain longer actions with **+ Add segment**.
+- One take is at most 150 frames (5 seconds at the model's 30 Hz). Chain longer actions with **+ Add segment**; on POSE TO POSE the timeline is held to that length.
 - Prompts are English only.
 - Pose accuracy does not keep a sideways pelvis shift relative to `Main`, and feet may slide a little in the half second around a strongly corrected pose.
 - The prebuilt `kimodo-win64-vulkan.zip` predates step progress: the bar shows activity rather than a percentage. A fresh `kimodo.bat` install builds the current fork and shows percentages; an older checkout needs `git pull` and a rebuild.
@@ -135,6 +149,7 @@ Full notices and license texts: [THIRD_PARTY.md](THIRD_PARTY.md) and [`licenses/
 
 ## Changelog
 
+- **2.4.0** — AZ Kimodo Motion 1.48.1. Drives AZ Body Rig as well as Advanced Skeleton: FK, IK legs and arms, and an IK spine. New POSE TO POSE tab: key poses by hand and the model fills in the motion between them. Fixes: feet stand flat on rigs whose ankle sits high above a short foot; a keyed FK/IK switch no longer takes a bake out of IK; a pose with the body turned round under IK hands is refused instead of spinning the character; a drag of `Main` keeps the poses placed before it; analyzed poses remember which way `Main` points. New download `azkimodo-maya-1.48.1.zip`. Installer and engine unchanged.
 - **2.3.1** — `kimodo.bat` 2.2.1 and the engine fork: the text encoder comes from a pinned revision, because its publisher removed the split files from `main` on 2026-10-29 and installs ended without it. An empty download is now an error, and a machine that was left without the encoder repairs itself on the next run. Maya tool unchanged (1.44.1).
 - **2.3.0** — AZ Kimodo Motion 1.44.1: pick-then-edit pose list on the timeline, RECALCULATE, Pose accuracy, IK bake, `Main` keys for jumps, turns and steps up, automatic character pick-up, keeping arms out of the body on cartoon rigs. New download `azkimodo-maya-1.44.1.zip` and step-by-step install. Engine fork reports step progress. `kimodo.bat` itself is unchanged.
 - **2.2.0** — the complete build: engine fork published, installer clones it (so `kmd-constrain` is built), Maya tool published as the `azkimodo` package (1.29.0), prebuilt Windows binaries attached.
@@ -155,7 +170,7 @@ Full notices and license texts: [THIRD_PARTY.md](THIRD_PARTY.md) and [`licenses/
 
 **Шаг 2. Инструмент для Maya**
 
-1. Скачайте **`azkimodo-maya-1.44.1.zip`** из того же релиза и распакуйте.
+1. Скачайте **`azkimodo-maya-1.48.1.zip`** из того же релиза и распакуйте.
 2. Скопируйте папку **`azkimodo`** в `Documents\maya\2025\scripts\`. Должен получиться путь `Documents\maya\2025\scripts\azkimodo\az_kimodo_gen.py`.
 3. Запустите или перезапустите Maya.
 4. В Script Editor, на вкладке **Python**, выполните:
@@ -165,14 +180,16 @@ from azkimodo import az_kimodo_gen_qt
 az_kimodo_gen_qt.show()
 ```
 
-В заголовке окна появится `v1.44.1`. Для кнопки на полке выделите эти две строки и перетащите их на полку средней кнопкой мыши.
+В заголовке окна появится `v1.48.1`. Для кнопки на полке выделите эти две строки и перетащите их на полку средней кнопкой мыши.
 
 **Шаг 3. Работа**
 
-1. Откройте сцену с ригом **Advanced Skeleton** со стандартными именами контролов или со скелетом UE5 Mannequin. Риг в комплект не входит. Если тул не нашёл его сам, нажмите **Change...** в CHARACTER и укажите файл или выделенный риг.
-2. Напишите промпт на английском и нажмите **GENERATE MOTION**.
+1. Откройте сцену с ригом **Advanced Skeleton** со стандартными именами контролов, с **AZ Body Rig** или со скелетом UE5 Mannequin. Риг в комплект не входит. Если тул не нашёл его сам, нажмите **Change...** в CHARACTER и укажите файл или выделенный риг.
+2. На вкладке **PROMPT** напишите промпт на английском и нажмите **GENERATE MOTION**.
 3. Нажмите **ANALYZE POSES**, выберите позу в списке, поправьте контролы и нажмите **Update**.
 4. Задайте **Pose accuracy** и нажмите **RECALCULATE**.
+
+**От позы к позе.** Вкладка **POSE TO POSE** рядом с PROMPT — анимация руками, без текста. Таймлайн сам встаёт на кадры, которые может покрыть тейк. Поставьте позу контролами и нажмите **New pose here**: поза попадёт в список, а каналы, которые вы двигали, получат ключи. Когда поз две или больше, **GENERATE MOTION** достроит движение между ними и запечёт его на риг.
 
 **Кнопка GENERATE MOTION серая, окно пишет `text bundle missing`:** установщик старше 2.2.1 завершился без текстового кодировщика. Скачайте актуальный `kimodo.bat` и запустите его на той же папке, он докачает недостающие 15 ГБ.
 

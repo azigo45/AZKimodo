@@ -199,6 +199,27 @@ QHeaderView::section {
     font-size: 9px; font-weight: 700; letter-spacing: 0.08em;
 }
 
+QFrame#tabPane {
+    background: #35383e; border: 1px solid #202225; border-radius: 6px;
+    border-top-left-radius: 0px;
+}
+QStackedWidget#tabStack { background: #35383e; }
+QTabBar::tab {
+    background: #2f3238; color: #8b95a3; border: 1px solid #202225;
+    border-bottom: none; border-top-left-radius: 5px;
+    border-top-right-radius: 5px; padding: 4px 12px; margin-right: 2px;
+    font-size: 9px; font-weight: 700;
+}
+QTabBar::tab:selected { background: #35383e; color: #7ea6d8; }
+QTabBar::tab:hover:!selected { color: #b9c2cf; }
+QWidget#tabPage { background: #35383e; }
+QListWidget {
+    background: #232529; border: 1px solid #202225; border-radius: 4px;
+    outline: none;
+}
+QListWidget::item { padding: 3px 6px; }
+QListWidget::item:selected { background: #2c4468; color: #e7e9ee; }
+
 QScrollArea { border: none; background: transparent; }
 QScrollBar:vertical { background: transparent; width: 11px; margin: 0; }
 QScrollBar::handle:vertical { background: #484c54; border-radius: 5px; min-height: 24px; }
@@ -407,6 +428,13 @@ class _HelpDialog(QtWidgets.QDialog):
             "GENERATE MOTION, and the take is baked onto the character's "
             "controls as it arrives. The solve runs in an external process, so "
             "Maya stays responsive.</p>"
+            "<h3 style='color:#9ec2f0'>Characters</h3>"
+            "<p>Drives an Advanced Skeleton rig, an AZ Body Rig or a UE5 "
+            "Mannequin skeleton. On a rig the take goes onto the FK controls and "
+            "the travel onto the global control - Main on Advanced Skeleton, "
+            "C_main on AZ Body Rig. Main below means that control. On AZ Body "
+            "Rig the spine and the legs are moved to FK before the first bake; "
+            "IK legs, arms and the spine are baked back onto the IK controls.</p>"
             "<h3 style='color:#9ec2f0'>Changing poses</h3>"
             "<p>Press ANALYZE POSES: the animation is read at the chosen step, "
             "the frames are marked on the timeline and the pose list opens. "
@@ -423,6 +451,18 @@ class _HelpDialog(QtWidgets.QDialog):
             "seed, and baked onto the controls. Pose accuracy, above that button, "
             "sets how closely the poses you edited are followed. Orange marks are "
             "poses you edited, blue are poses read from the animation.</p>"
+            "<h3 style='color:#9ec2f0'>Pose to pose</h3>"
+            "<p>The POSE TO POSE tab, next to PROMPT, is animation by hand, with no "
+            "prompt. Go to a frame, pose the character with its controls and press "
+            "New pose here: the pose is listed in the tab and keyed on every "
+            "channel you moved, and on every channel already animated. Click a "
+            "pose to go back to it - it is put on the character again, where it "
+            "stood - adjust it and press Update, or Delete it with its keys. "
+            "GENERATE MOTION fills in the motion between the poses, from the start "
+            "frame to the last pose, and bakes it; Pose accuracy sets how closely "
+            "the poses are hit. They then become the take's edited poses, so "
+            "ANALYZE POSES and RECALCULATE carry on from there. The poses are "
+            "kept on the rig.</p>"
             "<h3 style='color:#9ec2f0'>Writing prompts</h3>"
             "<ul>"
             "<li>English only, third person: <i>A person ...</i></li>"
@@ -652,6 +692,8 @@ class AZKimodoMotionWindow(QtWidgets.QDialog):
         self._poses_changed = False
         self._pose_dialog = None
         self._pose_accuracy = 100.0
+        self._key_poses = []
+        self._saved_timeline = None
         self._pending = None
         self._inflight = None
         self._cancelling = False
@@ -683,6 +725,10 @@ class AZKimodoMotionWindow(QtWidgets.QDialog):
         root.addWidget(self.lbl_status)
 
         self._add_segment()
+        # Pose to pose counts its frames from the take's start frame, which
+        # lives in Advanced settings and is built after the tab.
+        self.spin_start.valueChanged.connect(self._key_start_changed)
+        self._refresh_key_poses()
         self._report_install()
         # After the window is on screen, so a 20 MB rig import is seen as
         # "looking for the character" rather than as a window that will not
@@ -816,7 +862,36 @@ class AZKimodoMotionWindow(QtWidgets.QDialog):
         return box
 
     def _build_prompt_group(self):
-        box, layout = _group("PROMPT")
+        # Two ways to say what happens: a prompt the model plays out by itself,
+        # or poses set by hand that it moves between. A tab bar over a stack
+        # rather than a QTabWidget: that one is as tall as its tallest page and
+        # stretched the short prompt page to the height of the pose list.
+        holder = QtWidgets.QWidget()
+        outer = QtWidgets.QVBoxLayout(holder)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+
+        self.tabs_motion = QtWidgets.QTabBar()
+        self.tabs_motion.setDrawBase(False)
+        self.tabs_motion.setExpanding(False)
+        self.tabs_motion.addTab("PROMPT")
+        self.tabs_motion.addTab("POSE TO POSE")
+        outer.addWidget(self.tabs_motion)
+
+        pane = QtWidgets.QFrame()
+        pane.setObjectName("tabPane")
+        pane_layout = QtWidgets.QVBoxLayout(pane)
+        pane_layout.setContentsMargins(6, 6, 6, 6)
+        self.motion_stack = QtWidgets.QStackedWidget()
+        self.motion_stack.setObjectName("tabStack")
+        pane_layout.addWidget(self.motion_stack)
+        outer.addWidget(pane)
+
+        page = QtWidgets.QWidget()
+        page.setObjectName("tabPage")
+        layout = QtWidgets.QVBoxLayout(page)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(5)
         self.seg_layout = QtWidgets.QVBoxLayout()
         self.seg_layout.setContentsMargins(0, 0, 0, 0)
         self.seg_layout.setSpacing(6)
@@ -829,7 +904,36 @@ class AZKimodoMotionWindow(QtWidgets.QDialog):
                  self._add_segment),
             None,
             self.lbl_total))
-        return box
+
+        self.motion_stack.addWidget(page)
+        self.motion_stack.addWidget(self._build_key_pose_page())
+        self._fit_motion_tabs(0)
+        self.tabs_motion.currentChanged.connect(self._motion_tab_changed)
+        return holder
+
+    def _fit_motion_tabs(self, index):
+        # A hidden page ignores its own size, so the stack is as tall as the
+        # page on show.
+        for page_index in range(self.motion_stack.count()):
+            policy = (QtWidgets.QSizePolicy.Preferred if page_index == index
+                      else QtWidgets.QSizePolicy.Ignored)
+            self.motion_stack.widget(page_index).setSizePolicy(policy, policy)
+        self.motion_stack.setCurrentIndex(index)
+        self.motion_stack.updateGeometry()
+
+    def _motion_tab_changed(self, index):
+        self._fit_motion_tabs(index)
+        keys = index == 1
+        self.btn_generate.setToolTip(
+            "Fill in the motion between your poses and bake it onto the character"
+            if keys else "Solve the prompt and import the result")
+        if keys:
+            self._fit_key_timeline()
+            self._key_follow_timeline()
+        else:
+            # Back to prompts: the range the scene had before the poses.
+            core.restore_timeline(self._saved_timeline)
+            self._saved_timeline = None
 
     def _build_solver_group(self):
         box, layout = _group("SOLVER")
@@ -1029,7 +1133,8 @@ class AZKimodoMotionWindow(QtWidgets.QDialog):
 
         tools.addWidget(_row(
             _btn("Use selected", "sm",
-                 "Drive the selected rig instead - its top node or root joint",
+                 "Drive the selected rig instead - its top node, its root joint or\n"
+                 "any node of an AZ Body Rig",
                  self._pick_target),
             _btn("Import FBX...", "sm",
                  "Bring in a different skeleton to drive", self._import_target),
@@ -1128,14 +1233,15 @@ class AZKimodoMotionWindow(QtWidgets.QDialog):
         box, layout = _group("ACTIONS")
         self.cmb_limbs = _combo(
             [choice[0] for choice in core.IK_LIMB_CHOICES],
-            "Which controls drive the arms and legs. Bakes onto IK from the FK\n"
-            "animation, which is kept, so changing this does not need a new\n"
-            "generation.")
+            "Which controls drive the arms, the legs and the spine. Bakes onto IK\n"
+            "from the FK animation, which is kept, so changing this does not need\n"
+            "a new generation. The IK spine is for AZ Body Rig; on other rigs the\n"
+            "spine stays on its FK controls.")
         self.cmb_limbs.setCurrentIndex(
             cmds.optionVar(query=LIMBS_OPTVAR)
             if cmds and cmds.optionVar(exists=LIMBS_OPTVAR) else 0)
         self.cmb_limbs.currentIndexChanged.connect(self._limbs_changed)
-        layout.addWidget(_labeled("Bake limbs to", self.cmb_limbs))
+        layout.addWidget(_labeled("Bake to", self.cmb_limbs))
         self.btn_generate = _btn("GENERATE MOTION", "primary",
                                  "Solve the prompt and import the result",
                                  self._generate)
@@ -1201,6 +1307,292 @@ class AZKimodoMotionWindow(QtWidgets.QDialog):
         self.lbl_total.setText("total %d frames - %.1f s"
                                % (frames, frames / core.FPS))
 
+    # -- pose to pose ------------------------------------------------------- #
+
+    def _build_key_pose_page(self):
+        page = QtWidgets.QWidget()
+        page.setObjectName("tabPage")
+        layout = QtWidgets.QVBoxLayout(page)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(5)
+
+        self.list_keys = QtWidgets.QListWidget()
+        self.list_keys.setFixedHeight(130)
+        self.list_keys.setToolTip(
+            "Your poses. Click one to go to its frame and put it back on the\n"
+            "character.")
+        self.list_keys.itemClicked.connect(self._key_picked)
+        layout.addWidget(self.list_keys)
+
+        self.lbl_key_length = _label("")
+        self.lbl_key_length.setWordWrap(True)
+        self.lbl_key_length.setStyleSheet("color:#7d828c;font-size:9px;")
+        layout.addWidget(self.lbl_key_length)
+
+        self.btn_key_update = _btn(
+            "Update", "accent",
+            "Replace the selected pose with what the character is doing now,\n"
+            "and key it again", self._key_update)
+        self.btn_key_delete = _btn("Delete", "danger",
+                                   "Remove the selected pose and its keys",
+                                   self._key_delete)
+        layout.addWidget(_row(
+            _btn("New pose here", "sm",
+                 "Keep the character's pose on the current timeline frame and\n"
+                 "key every channel you moved, and every one already animated",
+                 self._key_new),
+            self.btn_key_update, self.btn_key_delete))
+
+        self.spin_key_accuracy = _spin(
+            self._pose_accuracy, 0.0, 100.0, 10.0, 0,
+            "How closely the bake follows your poses, in percent. 100 hits\n"
+            "them exactly, easing in and out half a second around each one.\n"
+            "0 leaves what the model made by itself.")
+        self.spin_key_accuracy.setSuffix(" %")
+        self.spin_key_accuracy.valueChanged.connect(self._pose_accuracy_changed)
+        layout.addWidget(_labeled("Pose accuracy", self.spin_key_accuracy))
+
+        hint = _label("Pose the character with its controls, go to a frame and "
+                      "press New pose here. GENERATE MOTION fills in the motion "
+                      "between the poses - no prompt needed.")
+        hint.setWordWrap(True)
+        hint.setStyleSheet("color:#7d828c;font-size:9px;")
+        layout.addWidget(hint)
+        self._sync_key_buttons()
+        return page
+
+    def _key_start(self):
+        return self.spin_start.value() if hasattr(self, "spin_start") else 1
+
+    def _fit_key_timeline(self):
+        """Keep the slider on the frames a pose can go on.
+
+        Before the start frame there is no take, and past the longest take the
+        model cannot reach - a pose there could only be refused.
+        """
+        first, last = core.key_pose_range(self._key_start())
+        saved = core.fit_timeline(first, last)
+        if self._saved_timeline is None:
+            self._saved_timeline = saved
+        self._say("Timeline on frames %d-%d: from the start frame to the longest "
+                  "take pose to pose can make." % (first, last))
+
+    def _key_start_changed(self, *_args):
+        self._refresh_key_poses()
+        if self.tabs_motion.currentIndex() == 1:
+            self._fit_key_timeline()
+
+    def _key_selected(self):
+        item = self.list_keys.currentItem()
+        return item.data(QtCore.Qt.UserRole) if item else None
+
+    def _sync_key_buttons(self):
+        chosen = self._key_selected() is not None
+        self.btn_key_update.setEnabled(chosen)
+        self.btn_key_delete.setEnabled(chosen)
+
+    def _refresh_key_poses(self, *_args):
+        if cmds is None or not hasattr(self, "spin_start"):
+            return
+        start = self._key_start()
+        self.list_keys.clear()
+        for pin in self._key_poses:
+            item = QtWidgets.QListWidgetItem(
+                "Frame %d" % core.take_frame_to_scene(pin["frame"], start))
+            item.setData(QtCore.Qt.UserRole, pin["frame"])
+            self.list_keys.addItem(item)
+        if not self._key_poses:
+            first, last = core.key_pose_range(start)
+            text = "No poses yet. They go on frames %d-%d." % (first, last)
+        else:
+            frames = core.key_pose_frames(self._key_poses)
+            text = ("%d pose%s. The take runs on frames %d-%d, from the start "
+                    "frame to the last pose."
+                    % (len(self._key_poses), "" if len(self._key_poses) == 1 else "s",
+                       start, core.take_frame_to_scene(frames - 1, start)))
+        self.lbl_key_length.setText(text)
+        self._key_follow_timeline()
+
+    def _key_follow_timeline(self):
+        """Select the pose on the current frame, or nothing if it has none."""
+        start = self._key_start()
+        now = int(round(cmds.currentTime(query=True)))
+        found = None
+        for row in range(self.list_keys.count()):
+            item = self.list_keys.item(row)
+            if core.take_frame_to_scene(item.data(QtCore.Qt.UserRole), start) == now:
+                found = item
+                break
+        if found is None:
+            self.list_keys.setCurrentRow(-1)
+            self.list_keys.clearSelection()
+        elif found is not self.list_keys.currentItem():
+            self.list_keys.setCurrentItem(found)
+            self.list_keys.scrollToItem(found)
+        self._sync_key_buttons()
+
+    def _time_moved(self, *_args):
+        # Every frame change lands here, so a window that has gone just stops
+        # listening rather than raising on each one.
+        try:
+            if self.tabs_motion.currentIndex() == 1:
+                self._key_follow_timeline()
+        except RuntimeError:
+            self._stop_watching_undo()
+
+    def _key_target(self):
+        if self._process is not None:
+            self._say("A solve is already running.")
+            return None
+        target = self.line_target.text().strip()
+        if not target or not cmds.objExists(target):
+            self._say("No character in the scene - load one in CHARACTER.")
+            return None
+        return target
+
+    def _keep_key_pose(self, target, frame):
+        """Read the pose on the current frame, key it and keep it. (keyed, replaced)."""
+        # Read before keying: the pose is what is on the screen either way, and
+        # a pose that cannot be read leaves no keys behind.
+        pin = core.read_key_pose(target, frame)
+        with core.undo_chunk("pose"):
+            keyed = core.key_posed_channels(target)
+            replaced = any(other["frame"] == frame for other in self._key_poses)
+            self._key_poses = sorted(
+                [other for other in self._key_poses if other["frame"] != frame]
+                + [pin], key=lambda other: other["frame"])
+            core.remember_key_poses(target, self._key_poses)
+        return keyed, replaced
+
+    def _key_new(self):
+        target = self._key_target()
+        if not target:
+            return
+        start = self._key_start()
+        frame = self._timeline_take_frame(start)
+        if frame < 0:
+            self._say("The timeline is before the take, which starts on frame %d "
+                      "(Start frame in Advanced settings)." % start)
+            return
+        if frame >= core.MAX_FRAMES:
+            self._say("This frame is past the longest take, which ends on frame %d."
+                      % core.take_frame_to_scene(core.MAX_FRAMES - 1, start))
+            return
+        try:
+            keyed, replaced = self._keep_key_pose(target, frame)
+        except Exception as error:
+            self._say("Could not read the pose: %s" % error)
+            traceback.print_exc()
+            return
+        self._refresh_key_poses()
+        self._say("%s frame %d, %d channels keyed - %d poses."
+                  % ("Replaced the pose on" if replaced else "Pose kept on",
+                     core.take_frame_to_scene(frame, start), keyed,
+                     len(self._key_poses)))
+
+    def _key_update(self):
+        frame = self._key_selected()
+        if frame is None:
+            return
+        target = self._key_target()
+        if not target:
+            return
+        start = self._key_start()
+        if (core.take_frame_to_scene(frame, start)
+                != int(round(cmds.currentTime(query=True)))):
+            self._say("The timeline has moved off this pose. Click the pose, "
+                      "adjust it, then press Update.")
+            return
+        try:
+            keyed, _replaced = self._keep_key_pose(target, frame)
+        except Exception as error:
+            self._say("Could not read the pose: %s" % error)
+            traceback.print_exc()
+            return
+        self._refresh_key_poses()
+        self._say("Pose updated on frame %d, %d channels keyed."
+                  % (core.take_frame_to_scene(frame, start), keyed))
+
+    def _key_delete(self):
+        frame = self._key_selected()
+        if frame is None:
+            return
+        target = self._key_target()
+        if not target:
+            return
+        scene = core.take_frame_to_scene(frame, self._key_start())
+        with core.undo_chunk("delete pose"):
+            core.cut_pose_keys(target, scene)
+            self._key_poses = [other for other in self._key_poses
+                               if other["frame"] != frame]
+            core.remember_key_poses(target, self._key_poses)
+        self._refresh_key_poses()
+        self._say("Pose on frame %d and its keys deleted - %d left."
+                  % (scene, len(self._key_poses)))
+
+    def _key_picked(self, item):
+        frame = item.data(QtCore.Qt.UserRole)
+        pin = next((other for other in self._key_poses if other["frame"] == frame),
+                   None)
+        target = self.line_target.text().strip()
+        shown = False
+        with core.undo_chunk("go to pose"):
+            cmds.currentTime(core.take_frame_to_scene(frame, self._key_start()),
+                             edit=True)
+            if (pin and self._process is None and target
+                    and cmds.objExists(target)):
+                try:
+                    core.show_key_pose(target, pin)
+                    shown = True
+                except Exception as error:
+                    # The frame is what was asked for; the pose on the rig is a
+                    # convenience a rig never baked cannot always give.
+                    print("[AZ Kimodo Motion %s] could not put the pose back on "
+                          "the character: %s" % (UI_VERSION, error))
+        self._sync_key_buttons()
+        self._say("Adjust the pose and press Update, or Delete." if shown else
+                  "On the pose's frame. Pose the character and press Update.")
+
+    def _generate_key_poses(self, model):
+        """Fill in the motion between the poses set by hand."""
+        if len(self._key_poses) < 2:
+            self._say("Pose to pose needs two poses at least - go to a frame, pose "
+                      "the character and press New pose here.")
+            return
+        prompt = core.KEY_POSE_PROMPT
+        frames = core.key_pose_frames(self._key_poses)
+        start = self._key_start()
+        poses = [copy.deepcopy(pin) for pin in self._key_poses]
+        for pin in poses:
+            pin["edited"] = True
+        pins = core.expand_held_pins(copy.deepcopy(poses))
+        if self.chk_even_travel.isChecked():
+            pins = core.interpolate_root_pins(pins)
+        # The poses go to the bake as edited ones: it hits them as closely as
+        # Pose accuracy says, and afterwards they are the take's pose list.
+        self._inflight = {
+            "solve": {"prompt": prompt, "frames": frames,
+                      "seed": self.spin_seed.value(),
+                      "steps": self.spin_steps.value(),
+                      "model": model["path"], "start_frame": start},
+            "poses": dict((pin["frame"], pin) for pin in poses),
+            "edited_frame": None,
+            "passes": 1}
+        self._embed_prompt = prompt
+        try:
+            self._take_dir = core.new_take_dir(self._install["root"])
+            argv = core.build_constrain_command(
+                model["path"], self._take_dir, prompt, frames,
+                self.spin_steps.value(), self.spin_seed.value(), pins,
+                self._install["root"], pin_weight=self.spin_pin_weight.value(),
+                hard=False)
+        except Exception as error:
+            self._inflight = None
+            self._say("Cannot start: %s" % error)
+            traceback.print_exc()
+            return
+        self._launch(argv)
+
     # -- install ---------------------------------------------------------- #
 
     def _describe_model(self):
@@ -1252,6 +1644,10 @@ class AZKimodoMotionWindow(QtWidgets.QDialog):
         model = self._current_model()
         if model is None:
             self._say("No model selected.")
+            return
+
+        if self.tabs_motion.currentIndex() == 1:
+            self._generate_key_poses(model)
             return
 
         try:
@@ -1358,8 +1754,10 @@ class AZKimodoMotionWindow(QtWidgets.QDialog):
         self._solver_stepped_at = 0.0
         # Several prompt segments solve one after another, restarting the steps.
         self._solver_pass = 0
-        self._solver_passes = 1 if self._inflight and self._inflight["edited_frame"] is not None \
-            else max(1, len(self._segments))
+        inflight = self._inflight or {}
+        self._solver_passes = (inflight.get("passes")
+                               or (1 if inflight.get("edited_frame") is not None
+                                   else max(1, len(self._segments))))
         self._show_progress(None, "Loading the model...")
 
         self._started_at = time.time()
@@ -1537,7 +1935,8 @@ class AZKimodoMotionWindow(QtWidgets.QDialog):
                     self._take_dir,
                     start_frame=self.spin_start.value(),
                     prefix=self.line_prefix.text().strip() or "kimodo_",
-                    set_range=self.chk_range.isChecked(),
+                    set_range=(self.chk_range.isChecked()
+                               and self.tabs_motion.currentIndex() != 1),
                     group=self.chk_group.isChecked())
             finally:
                 cmds.undoInfo(closeChunk=True)
@@ -1700,7 +2099,7 @@ class AZKimodoMotionWindow(QtWidgets.QDialog):
                       "Select your character's root joint (SKM_Manny's "
                       "'root'), or use Import skeleton FBX.")
             return
-        self._set_target(selected[0])
+        self._set_target(core.rig_top(selected[0]))
 
     def _import_target(self):
         picked = cmds.fileDialog2(fileMode=1, okCaption="Import",
@@ -1730,8 +2129,13 @@ class AZKimodoMotionWindow(QtWidgets.QDialog):
             # animator knows which pose is bind.
             if key and not core.has_bind_pose(root):
                 if core.is_animated(root, target_key=key):
-                    note = (" - the rig is animated and has no recorded bind "
-                            "pose; put it at bind and press Remember bind pose")
+                    # AZ Body Rig's bind is its controls at zero, which beats
+                    # recording whatever frame the scene is showing.
+                    note = (" - no recorded bind pose; its controls at zero "
+                            "are taken as bind" if core.bind_from_controls(root)
+                            else " - the rig is animated and has no recorded "
+                            "bind pose; put it at bind and press Remember bind "
+                            "pose")
                 else:
                     with core.undo_chunk("measure rig"):
                         core.capture_bind_pose(root)
@@ -1747,6 +2151,12 @@ class AZKimodoMotionWindow(QtWidgets.QDialog):
             self._solve, self._poses = None, {}
             traceback.print_exc()
         self._refresh_poses()
+        try:
+            self._key_poses = core.read_key_poses(root)
+        except Exception:
+            self._key_poses = []
+            traceback.print_exc()
+        self._refresh_key_poses()
         if note and not quiet:
             self._say(self.lbl_target.text() + note)
 
@@ -1880,10 +2290,11 @@ class AZKimodoMotionWindow(QtWidgets.QDialog):
             cmds.undoInfo(openChunk=True, chunkName="AZ Kimodo Motion limbs")
             try:
                 core.clear_ik_keys(target)
-                core.set_limb_mode(target, ())
-                core.bake_ik(target, core.take_frame_to_scene(0, solve["start_frame"]),
-                             core.take_frame_to_scene(solve["frames"] - 1,
-                                                      solve["start_frame"]), which)
+                first = core.take_frame_to_scene(0, solve["start_frame"])
+                last = core.take_frame_to_scene(solve["frames"] - 1,
+                                                solve["start_frame"])
+                core.set_limb_mode(target, (), first, last)
+                core.bake_ik(target, first, last, which)
                 self._store_poses()
             finally:
                 cmds.undoInfo(closeChunk=True)
@@ -1891,7 +2302,7 @@ class AZKimodoMotionWindow(QtWidgets.QDialog):
             self._say("Could not change the limbs: %s" % error)
             traceback.print_exc()
             return
-        self._say("Limbs baked to: %s." % core.IK_LIMB_CHOICES[index][0])
+        self._say("Baked to: %s." % core.IK_LIMB_CHOICES[index][0])
 
     # -- pose analyzer ---------------------------------------------------- #
 
@@ -1987,9 +2398,11 @@ class AZKimodoMotionWindow(QtWidgets.QDialog):
         self._pose_dialog.raise_()
 
     def _capture_pose(self, target, solve, frame):
+        """Read the pose on the rig into the pin of `frame`. False when refused."""
         # The box describes the selected row, and reading the take below hops the
         # timeline, which moves the selection and the box with it. So this first.
         old = self._poses.get(frame, {})
+        turn_drag, anchor = 0.0, None
         dialog = self._pose_dialog
         if (dialog is not None and dialog.isVisible()
                 and dialog._selected() in (frame, None)):
@@ -2000,6 +2413,7 @@ class AZKimodoMotionWindow(QtWidgets.QDialog):
             pin = core.capture_pose_from_rig(target, frame, "full")
             pin["main_above"] = core.pose_main_above(
                 target, self._poses, frame, solve["start_frame"])
+            posed = pin
             # Read before the fit, which moves the timeline to see the curves.
             drag, placed = core.main_place(target)
             if self.chk_keep_path.isChecked():
@@ -2040,16 +2454,36 @@ class AZKimodoMotionWindow(QtWidgets.QDialog):
             elif placed and holds:
                 pin["main_target"] = placed
                 pin["main_hold"] = True
+        # A body read half way round from the animation, with Main where the bake
+        # left it, is the hips or a control above them turned - and IK hands,
+        # which follow Main, stay put. The pin held arms facing the other way,
+        # and the solve spun the character round and twisted them. Measured
+        # before the fit, against the pose this frame had and against the
+        # curves: a turn keyed with Auto Key on is in the curves as well.
+        gaps = [core.heading_gap(posed, reference)
+                for reference in ((old if old.get("global") else None), anchor)
+                if reference]
+        turned = max(gaps, key=abs) if gaps else 0.0
+        if abs(turn_drag) < 1.0 and abs(turned) > core.POSE_TURN_LIMIT:
+            self._say("Pose not kept: the body faces %d degrees away from the "
+                      "animation on this frame, but Main was not turned. The hips "
+                      "or a control above them is turned while the IK hands stay "
+                      "where they were, so the arms would be twisted and the solve "
+                      "would spin the character round. Turn Main to turn the "
+                      "character, or put the hips back and press Update."
+                      % round(abs(turned)))
+            return False
         pin["edited"] = True
         # RECALCULATE reads an un-keyed pose again in case it was changed after
         # Update. If it was not, the pose and the undo queue stay as they are.
         if frame in self._unapplied and core.same_pose(pin, old):
-            return
+            return True
         self._poses[frame] = pin
         self._unapplied.add(frame)
         self._poses_changed = True
         self._store_poses()
         self._refresh_poses()
+        return True
 
     def _new_pose(self):
         context = self._pose_context()
@@ -2065,7 +2499,8 @@ class AZKimodoMotionWindow(QtWidgets.QDialog):
                                                   solve["start_frame"])))
             return
         try:
-            self._capture_pose(target, solve, frame)
+            if self._capture_pose(target, solve, frame) is False:
+                return
         except Exception as error:
             self._say("Could not read the pose: %s" % error)
             traceback.print_exc()
@@ -2083,7 +2518,8 @@ class AZKimodoMotionWindow(QtWidgets.QDialog):
                       "adjust it, then press Update.")
             return
         try:
-            self._capture_pose(target, solve, frame)
+            if self._capture_pose(target, solve, frame) is False:
+                return
         except Exception as error:
             self._say("Could not read the pose: %s" % error)
             traceback.print_exc()
@@ -2132,6 +2568,15 @@ class AZKimodoMotionWindow(QtWidgets.QDialog):
 
     def _pose_accuracy_changed(self, value):
         self._pose_accuracy = value
+        # The pose list and the pose to pose tab show the same setting.
+        spins = [getattr(self, "spin_key_accuracy", None)]
+        if self._pose_dialog is not None:
+            spins.append(self._pose_dialog.spin_pose_accuracy)
+        for spin in spins:
+            if spin is not None and abs(spin.value() - value) > 1e-6:
+                spin.blockSignals(True)
+                spin.setValue(value)
+                spin.blockSignals(False)
         # The poses are the same, but what the bake does with them is not.
         if self._poses:
             self._poses_changed = True
@@ -2147,7 +2592,8 @@ class AZKimodoMotionWindow(QtWidgets.QDialog):
             if core.has_unkeyed_pose(target):
                 frame = self._timeline_take_frame(solve["start_frame"])
                 if 0 <= frame < solve["frames"]:
-                    self._capture_pose(target, solve, frame)
+                    if self._capture_pose(target, solve, frame) is False:
+                        return
             if not self._poses_changed:
                 self._say("No pose has changed, so there is nothing to "
                           "recalculate.")
@@ -2639,6 +3085,9 @@ class AZKimodoMotionWindow(QtWidgets.QDialog):
             self._undo_callbacks = [
                 om2.MEventMessage.addEventCallback(name, self._undo_happened, name)
                 for name in ("Undo", "Redo")]
+            # The pose to pose list follows the timeline, as the pose list does.
+            self._undo_callbacks.append(
+                om2.MEventMessage.addEventCallback("timeChanged", self._time_moved))
 
     def _stop_watching_undo(self):
         callbacks, self._undo_callbacks = self._undo_callbacks, []
@@ -2668,6 +3117,10 @@ class AZKimodoMotionWindow(QtWidgets.QDialog):
                 self._stored = ""
                 self._refresh_poses()
             return
+        keys = core.read_key_poses(target)
+        if keys != self._key_poses:
+            self._key_poses = keys
+            self._refresh_key_poses()
         if core.solve_text(target) == self._stored:
             return
         before = set(self._unapplied)

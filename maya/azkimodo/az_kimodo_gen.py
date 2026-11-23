@@ -23,9 +23,79 @@ Launch in Maya:
     from azkimodo import az_kimodo_gen_qt
     az_kimodo_gen_qt.show()
 
-VERSION 1.44.1
+VERSION 1.48.1
 
 History
+    1.48.1 Pose to pose fits the timeline to the take it can make: from the
+           start frame to the longest take, with the current frame moved
+           inside. A pose could not go before the start frame and the
+           slider let you there. Back on PROMPT the old range returns, and
+           a take generated from poses no longer shrinks the range to
+           itself.
+    1.48.0 Pose to pose is animation by hand. New pose here and Update key
+           every control channel moved off its rest value, and every one
+           already animated, on that frame; Delete takes those keys off
+           again. The tab has no prompt: the take runs from the start frame
+           to the last pose and the motion between is filled in with a
+           neutral prompt of its own.
+    1.47.0 Pose to pose. A tab next to the prompt keeps poses made by hand:
+           go to a frame, pose the character and press New pose here. The
+           take is generated through them with the tab's own prompt, the
+           bake hits them as closely as Pose accuracy says, and they
+           become the take's edited poses for ANALYZE POSES and
+           RECALCULATE. The list is kept on the rig; clicking a pose puts
+           it back on the character where it stood.
+    1.46.4 Analyzed poses remember Main's turn. Main's rotateY landed
+           only on edited poses, and what it took to land there was ramped
+           in from the start of the take and held to its end - so every
+           solve turned Main away from the body on frames nobody touched,
+           and the next turn of Main, made against that arrow, sent the
+           character somewhere else. Each analyzed pose now keeps the turn
+           Main had there, a turn after it swings that round with the rest,
+           and Main lands on every kept pose with the difference ramped
+           only between neighbours. Poses the solve leaves free - next to
+           an edit or inside a turn - keep no turn of their own.
+    1.46.3 A drag of Main no longer pulls the poses placed before it. The
+           path was moved by a ramp from the start of the take, so a pose
+           placed and solved earlier went most of the way with a later
+           drag - a drag at frame 72 took the pose at frame 51 70% of the
+           way along - and the character ran on the spot between them.
+           Placed poses now stay where they were put, and a drag stretches
+           the path from the placed pose before it.
+    1.46.2 A pose edit no longer breaks the arms. The take now owns the
+           FK/IK switches over its own frames: AZ Body Rig's FK/IK match
+           keys them with Auto Key on, and those keys took the arms of a
+           bake into IK back to FK by themselves. Update refuses a pose
+           whose body faces more than 120 degrees away from the animation
+           while Main was not turned - the hips turned under IK hands that
+           stay put, so the pin held arms facing the other way and the
+           solve spun the character. Pose accuracy leaves a joint to the
+           solve when forcing it would take more than 90 degrees, instead
+           of turning it half way round over the blend.
+    1.46.1 Feet stand flat. The reference pose swung each foot onto the
+           generated skeleton's ankle-to-toe direction, so a rig whose
+           ankle sits higher above a shorter foot stood every step tilted
+           by the difference - 27 degrees toes up on a robot character.
+           The feet now keep the stance they were bound with and take only
+           the heading of the source's, and a reference measured the old
+           way is measured again. An AZ Body Rig with no recorded bind pose
+           takes its controls at zero as bind, as its own Reset pose does,
+           instead of being measured wherever it stood - and an IK bake no
+           longer stops on it.
+    1.46.0 IK spine. On AZ Body Rig the spine bakes onto its IK controls,
+           alone or with the legs and arms: the hips and chest IK controls take
+           the FK pose exactly, and the mid control goes where the spine joints
+           between come closest to theirs. A spine posed in IK reads back off
+           the rig's own spine frames. Advanced Skeleton keeps its FK spine.
+    1.45.0 Drives AZ Body Rig. The take goes onto its FK controls, C_root
+           carries the hips and C_main the travel, as RootX_M and Main do on
+           Advanced Skeleton. The spine lands on the main FK spine controls
+           whatever the spine count, and the spine and the legs are moved to
+           FK first - the rig ships with them in IK. IK legs and arms bake
+           onto its IK controls, and a limb posed in IK reads back through the
+           frames the rig's own FK/IK match uses. Use selected takes any node
+           of the rig. A control placed by its offsetParentMatrix is written
+           through its own channels.
     1.44.1 Pose accuracy sits in the pose list, next to RECALCULATE.
     1.44.0 Pose accuracy. The solve holds a pose only softly, so the bake now
            carries each edited pose the rest of the way, easing in and out
@@ -274,6 +344,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import shutil
 import struct
 import time
@@ -287,7 +358,7 @@ except Exception:
     mel = None
     om2 = None
 
-VERSION = "1.44.1"
+VERSION = "1.48.1"
 
 def _default_root():
     """The first kimodo.cpp checkout on any drive, else C:/kimodo.cpp.
@@ -935,18 +1006,69 @@ AS_FKIK_SWITCHES = ("FKIKArm_L", "FKIKArm_R", "FKIKLeg_L", "FKIKLeg_R",
 # happens far from the one control that should have followed.
 AS_TRAVEL_CONTROL = "Main"
 
+AZ_BODY_RIG = "az_body_rig"
+
+# AZ Body Rig drives its deform joints from FK controls too, with C_root as
+# the hips like Advanced Skeleton's RootX_M. Its FK spine shares the turn of a
+# main control over the joints up to the next main one, so the generator's
+# spine goes onto the main controls: the pelvis control turns the first spine
+# joint and everything above it, the middle one the joints up to the chest.
+# Which spine control is the middle one depends on the spine count - see
+# _with_alternates. A rig with a single neck control leaves Neck2 unmapped.
+RETARGET_MAPS[(SOMA30["key"], AZ_BODY_RIG)] = [
+    ("Hips", "C_root_CTRL"),
+    ("Spine1", "C_pelvis_FK_CTRL"),
+    ("Spine2", "C_spine_02_FK_CTRL"),
+    ("Chest", "C_chest_FK_CTRL"),
+    ("Neck1", "C_neck_01_CTRL"),
+    ("Neck2", "C_neck_02_CTRL"),
+    ("Head", "C_head_CTRL"),
+    ("LeftShoulder", "L_clavicle_CTRL"),
+    ("LeftArm", "L_shoulder_FK_CTRL"),
+    ("LeftForeArm", "L_elbow_FK_CTRL"),
+    ("LeftHand", "L_wrist_FK_CTRL"),
+    ("RightShoulder", "R_clavicle_CTRL"),
+    ("RightArm", "R_shoulder_FK_CTRL"),
+    ("RightForeArm", "R_elbow_FK_CTRL"),
+    ("RightHand", "R_wrist_FK_CTRL"),
+    ("LeftLeg", "L_hip_FK_CTRL"),
+    ("LeftShin", "L_knee_FK_CTRL"),
+    ("LeftFoot", "L_ankle_FK_CTRL"),
+    ("LeftToeBase", "L_ball_FK_CTRL"),
+    ("RightLeg", "R_hip_FK_CTRL"),
+    ("RightShin", "R_knee_FK_CTRL"),
+    ("RightFoot", "R_ankle_FK_CTRL"),
+    ("RightToeBase", "R_ball_FK_CTRL"),
+]
+
+# Its blends run from 0, FK, to 1, IK; the spine and the legs ship in IK.
+AZ_FKIK_SWITCHES = ("L_arm_switch_CTRL", "R_arm_switch_CTRL", "L_leg_switch_CTRL",
+                    "R_leg_switch_CTRL", "C_spine_switch_CTRL")
+AZ_TRAVEL_CONTROL = "C_main_CTRL"
+# The rig's own record, on its top group: the IK frames its matcher reads are
+# among it.
+AZ_RIG_DATA_ATTR = "azBodyRigData"
+
+# (switch names, blend attribute) of each rig family. 0 is FK on all of them.
+FKIK_SWITCH_SETS = ((AS_FKIK_SWITCHES, "FKIKBlend"), (AZ_FKIK_SWITCHES, "fkIk"))
+
+TRAVEL_CONTROLS = {AS_MANNY: AS_TRAVEL_CONTROL, AZ_BODY_RIG: AZ_TRAVEL_CONTROL}
+
 # Enough of the hierarchy to tell one target rig from another by name alone.
 # The control rig is checked first: it also carries the bind skeleton, and
 # driving the controls is what the animator actually wants.
 TARGET_SIGNATURES = {
     AS_MANNY: ("RootX_M", "FKChest_M", "FKWrist_L", "FKKnee_R", "FKToes_L"),
+    AZ_BODY_RIG: ("C_main_CTRL", "C_root_CTRL", "C_chest_FK_CTRL", "L_wrist_FK_CTRL",
+                  "R_knee_FK_CTRL", "L_ball_FK_CTRL"),
     UE5_MANNY: ("pelvis", "spine_05", "clavicle_l", "thigh_r", "ball_l"),
 }
 
-TARGET_ORDER = (AS_MANNY, UE5_MANNY)
+TARGET_ORDER = (AS_MANNY, AZ_BODY_RIG, UE5_MANNY)
 
 TARGET_LABELS = {UE5_MANNY: "UE5 Mannequin skeleton",
-                 AS_MANNY: "Advanced Skeleton controls"}
+                 AS_MANNY: "Advanced Skeleton controls",
+                 AZ_BODY_RIG: "AZ Body Rig controls"}
 
 
 def rest_positions(skeleton, scale=1.0):
@@ -1141,6 +1263,22 @@ def is_generated_skeleton(node):
     return False
 
 
+def rig_top(node):
+    """The node to drive a rig from, for any node picked inside it.
+
+    AZ Body Rig keeps its spine and limb controls side by side under one
+    group rather than in one chain, so only that group reaches every mapped
+    control. Anything else is driven from the node itself.
+    """
+    current = node
+    while current:
+        if cmds.attributeQuery(AZ_RIG_DATA_ATTR, node=current, exists=True):
+            return current
+        parents = cmds.listRelatives(current, parent=True, fullPath=True)
+        current = parents[0] if parents else None
+    return node
+
+
 def identify_target(root):
     """Which known rig is this? Returns a TARGET_SIGNATURES key, or ""."""
     names = _by_short_name(root)
@@ -1150,23 +1288,40 @@ def identify_target(root):
     return ""
 
 
+def _travel_control(root):
+    """The control this rig's travel is written to, or None."""
+    names = _by_short_name(root)
+    for name in TRAVEL_CONTROLS.values():
+        if name in names:
+            return names[name]
+    return None
+
+
+def _fkik_plugs(root):
+    """{switch: blend plug} for every FK/IK blend the rig has."""
+    names = _by_short_name(root)
+    plugs = {}
+    for switches, attribute in FKIK_SWITCH_SETS:
+        for switch in switches:
+            node = names.get(switch)
+            if node and cmds.objExists(node + "." + attribute):
+                plugs[switch] = node + "." + attribute
+    return plugs
+
+
 def switch_to_fk(root):
-    """Move Advanced Skeleton's blends to FK so the FK controls actually drive.
+    """Move the rig's blends to FK so the FK controls actually drive.
 
     A limb sitting in IK ignores whatever is baked onto its FK controls, and
-    this rig ships with the legs in IK - the animation would look like it had
-    simply not applied.
+    Advanced Skeleton ships with the legs in IK, AZ Body Rig with the legs and
+    the spine - the animation would look like it had simply not applied.
     """
-    names = _by_short_name(root)
     moved = []
-    for switch in AS_FKIK_SWITCHES:
-        node = names.get(switch)
-        if not node or not cmds.objExists(node + ".FKIKBlend"):
+    for switch, plug in _fkik_plugs(root).items():
+        if cmds.getAttr(plug, lock=True):
             continue
-        if cmds.getAttr(node + ".FKIKBlend", lock=True):
-            continue
-        if abs(cmds.getAttr(node + ".FKIKBlend")) > 1e-6:
-            cmds.setAttr(node + ".FKIKBlend", 0.0)
+        if abs(cmds.getAttr(plug)) > 1e-6:
+            cmds.setAttr(plug, 0.0)
             moved.append(switch)
     return moved
 
@@ -1190,11 +1345,27 @@ def describe_target(root):
 # Skeleton rig has its chest control instead.
 AS_ALTERNATE_CONTROLS = {"FKSpine3_M": "FKChest_M"}
 
+# AZ Body Rig puts its main FK spine controls on the pelvis, the middle spine
+# joint and the chest; the joints between them get inbetween controls named
+# the same way. With N spine joints the middle one is number (N + 1) // 2.
+_AZ_SPINE_FK = re.compile(r"^C_spine_\d\d_FK_CTRL$")
+
+
+def _az_spine_middle(names):
+    count = sum(1 for name in names if _AZ_SPINE_FK.match(name))
+    return "C_spine_%02d_FK_CTRL" % ((count + 1) // 2) if count else None
+
 
 def _with_alternates(mapping, names):
-    return [(source, target if target in names
-             else AS_ALTERNATE_CONTROLS.get(target, target))
-            for source, target in mapping]
+    middle = _az_spine_middle(names)
+    resolved = []
+    for source, target in mapping:
+        if middle and _AZ_SPINE_FK.match(target):
+            target = middle
+        elif target not in names:
+            target = AS_ALTERNATE_CONTROLS.get(target, target)
+        resolved.append((source, target))
+    return resolved
 
 
 def resolve_pairs(source_joints, skeleton, target_root, target_key=""):
@@ -1238,7 +1409,63 @@ def _matrix_angle(matrix):
     return math.degrees(2.0 * math.acos(min(1.0, abs(quaternion.w))))
 
 
+def _offset_placed(node):
+    """True when the node's offsetParentMatrix carries part of its placement.
+
+    AZ Body Rig places every control that way, with no zero group above it.
+    Such a node is written through its own channels, solved against all that
+    sits above them, the way the rig's own matcher writes it.
+    """
+    plug = node + ".offsetParentMatrix"
+    if not cmds.objExists(plug):
+        return False
+    if cmds.listConnections(plug, source=True, destination=False):
+        return True
+    return not om2.MMatrix(cmds.getAttr(plug)).isEquivalent(om2.MMatrix.kIdentity)
+
+
+def _channels_to(node, world, rotate_order, translate=True, rotate=True):
+    """Pose `node` through its channels so that its world matrix becomes `world`."""
+    local = om2.MMatrix(cmds.getAttr(node + ".matrix"))
+    above = local.inverse() * _world(node)
+    wanted = om2.MTransformationMatrix(om2.MMatrix(world) * above.inverse())
+    values = []
+    if rotate:
+        euler = wanted.rotation(asQuaternion=False)
+        euler.reorderIt(rotate_order)
+        values += [("rotate" + axis, math.degrees(angle))
+                   for axis, angle in zip("XYZ", (euler.x, euler.y, euler.z))]
+    if translate:
+        move = wanted.translation(om2.MSpace.kTransform)
+        values += [("translate" + axis, value)
+                   for axis, value in zip("XYZ", (move.x, move.y, move.z))]
+    for attribute, value in values:
+        plug = node + "." + attribute
+        if cmds.getAttr(plug, settable=True):
+            cmds.setAttr(plug, value)
+
+
+def _set_world_position(node, position):
+    if _offset_placed(node):
+        values = list(_world(node))
+        values[12:15] = [float(value) for value in position[:3]]
+        _channels_to(node, om2.MMatrix(values), cmds.getAttr(node + ".rotateOrder"),
+                     rotate=False)
+        return
+    cmds.xform(node, worldSpace=True, translation=position)
+
+
+def _set_world_matrix(node, matrix):
+    if _offset_placed(node):
+        _channels_to(node, matrix, cmds.getAttr(node + ".rotateOrder"))
+        return
+    cmds.xform(node, worldSpace=True, matrix=list(matrix))
+
+
 def _set_world_rotation(node, matrix, rotate_order):
+    if _offset_placed(node):
+        _channels_to(node, matrix, rotate_order, translate=False)
+        return
     euler = om2.MTransformationMatrix(matrix).rotation(asQuaternion=False)
     euler.reorderIt(rotate_order)
     cmds.xform(node, worldSpace=True, rotation=(
@@ -1268,6 +1495,15 @@ def _without_twist(matrix, axis):
     return (q * twist.inverse()).asMatrix()
 
 
+# A rig is bound standing on the ground, and the generated skeleton rests
+# standing on it too, so a foot flat at bind is the foot flat at rest whatever
+# angle its bone makes. Swinging it onto the source's ankle-to-toe direction
+# instead tilts the sole by the difference between the two feet: on a robot
+# whose ankle sits high above a short foot the bone points 47.7 degrees down
+# against the source's 20.9, and every step landed 27 degrees toes up.
+LEVEL_JOINTS = ("LeftFoot", "RightFoot")
+
+
 def align_to_source_rest(pairs, mapping, skeleton, scale, rotate_orders,
                          drop_twist=False):
     """Swing the target into the source's rest pose and return that pose.
@@ -1282,6 +1518,10 @@ def align_to_source_rest(pairs, mapping, skeleton, scale, rotate_orders,
     The swing is the minimal arc between the two bone directions, which leaves
     roll around the bone unconstrained; a bone whose child is not itself mapped
     simply inherits its parent's correction.
+
+    The feet are the exception (LEVEL_JOINTS): each keeps the world orientation
+    it was bound with and turns only about the vertical, onto the heading of
+    its source foot, so the toes below it stay flat as well.
     """
     source_rest = rest_positions(skeleton, scale)
     source_index = {name: index for index, name in enumerate(skeleton["names"])}
@@ -1301,9 +1541,38 @@ def align_to_source_rest(pairs, mapping, skeleton, scale, rotate_orders,
                 break
             ancestor = parents[ancestor]
 
+    # Read before anything is swung: the legs above carry the feet with them.
+    level = {}
+    for index, (source, target) in enumerate(pairs):
+        source_name = mapping[index][0]
+        if source_name not in LEVEL_JOINTS:
+            continue
+        child_name = mapped_child.get(source_name)
+        bone = None
+        if child_name:
+            head_ws = cmds.xform(target, query=True, worldSpace=True,
+                                 translation=True)
+            tail_ws = cmds.xform(pairs[mapped_names.index(child_name)][1],
+                                 query=True, worldSpace=True, translation=True)
+            bone = om2.MVector(tail_ws[0] - head_ws[0], 0.0,
+                               tail_ws[2] - head_ws[2])
+        level[source_name] = (_rotation_matrix(target), bone)
+
     for index, (source, target) in enumerate(pairs):
         source_name = mapping[index][0]
         child_name = mapped_child.get(source_name)
+        if source_name in level:
+            bind_turn, bone = level[source_name]
+            heading = om2.MQuaternion()
+            if bone is not None:
+                head = source_rest[source_index[source_name]]
+                tail = source_rest[source_index[child_name]]
+                wanted = om2.MVector(tail[0] - head[0], 0.0, tail[2] - head[2])
+                if bone.length() > 1e-6 and wanted.length() > 1e-6:
+                    heading = om2.MQuaternion(bone.normal(), wanted.normal())
+            _set_world_rotation(target, bind_turn * heading.asMatrix(),
+                                rotate_orders[index])
+            continue
         if not child_name:
             continue
 
@@ -1345,9 +1614,16 @@ REST_ATTR = "azKimodoRetargetRest"
 RETARGET_MODES = ("replace", "append")
 
 
+# Changes whenever an aligned reference is measured differently, so a rig that
+# carries one measured the old way measures it again instead of serving it.
+# "feet": the feet keep their bind stance (1.46.1).
+REST_REVISION = "feet"
+
+
 def _rest_signature(skeleton_key, target_key, align_rest, drop_twist=False):
-    return "%s|%s|%d|%d" % (skeleton_key, target_key,
-                            1 if align_rest else 0, 1 if drop_twist else 0)
+    signature = "%s|%s|%d|%d" % (skeleton_key, target_key,
+                                 1 if align_rest else 0, 1 if drop_twist else 0)
+    return signature + "|" + REST_REVISION if align_rest else signature
 
 
 def read_stored_rest(target_root, signature):
@@ -1493,6 +1769,44 @@ def capture_bind_pose(target_root):
     return pose
 
 
+def _az_controls(root):
+    """AZ Body Rig's controls under `root`, as its own Reset pose finds them."""
+    if not cmds.attributeQuery(AZ_RIG_DATA_ATTR, node=root, exists=True):
+        return []
+    controls_set = _namespace_prefix(root) + "AZ_controls_SET"
+    if not cmds.objExists(controls_set):
+        return []
+    top = (cmds.ls(root, long=True) or [root])[0]
+    members = cmds.ls(cmds.sets(controls_set, query=True) or [], long=True,
+                      type="transform") or []
+    return [node for node in members if node.startswith(top + "|")]
+
+
+def _bind_record(root):
+    """The rig's bind pose as {node: {attribute: values}}, or {} when unknown.
+
+    The pose recorded on the rig wins. An AZ Body Rig without one still has a
+    known bind - every control at zero, which is where its own Reset pose puts
+    them. Without this a rig whose record was lost or never made was measured
+    wherever it stood, and an IK bake on it stopped half way.
+    """
+    if cmds.attributeQuery(BIND_ATTR, node=root, exists=True):
+        try:
+            pose = json.loads(cmds.getAttr(root + "." + BIND_ATTR) or "")
+        except ValueError:
+            pose = None
+        if pose:
+            return pose
+    zero = [0.0, 0.0, 0.0]
+    return dict((node.split("|")[-1], {"translate": zero, "rotate": zero})
+                for node in _az_controls(root))
+
+
+def bind_from_controls(root):
+    """True when the rig's bind is known without a record - see _bind_record."""
+    return bool(_az_controls(root))
+
+
 def _set_triple(node, attribute, values):
     """Write a translate/rotate triple, channel by channel.
 
@@ -1517,13 +1831,8 @@ def _set_triple(node, attribute, values):
 
 
 def restore_bind_pose(target_root):
-    """Put the rig back to the pose captured at import. False when none was."""
-    if not cmds.attributeQuery(BIND_ATTR, node=target_root, exists=True):
-        return False
-    try:
-        pose = json.loads(cmds.getAttr(target_root + "." + BIND_ATTR) or "")
-    except Exception:
-        return False
+    """Put the rig back to its bind pose. False when none is known."""
+    pose = _bind_record(target_root)
     if not pose:
         return False
 
@@ -1559,13 +1868,8 @@ def remember_fkik(root):
     """
     if cmds.attributeQuery(BLEND_ATTR, node=root, exists=True):
         return False
-    names = _by_short_name(root)
-    blends = {}
-    for switch in AS_FKIK_SWITCHES:
-        node = names.get(switch)
-        plug = (node + ".FKIKBlend") if node else ""
-        if plug and cmds.objExists(plug):
-            blends[switch] = cmds.getAttr(plug)
+    blends = dict((switch, cmds.getAttr(plug))
+                  for switch, plug in _fkik_plugs(root).items())
     if not blends:
         return False
     cmds.addAttr(root, longName=BLEND_ATTR, dataType="string")
@@ -1581,19 +1885,19 @@ def restore_fkik(root):
         blends = json.loads(cmds.getAttr(root + "." + BLEND_ATTR) or "")
     except Exception:
         blends = {}
-    names = _by_short_name(root)
+    plugs = _fkik_plugs(root)
     moved = []
     for switch, value in (blends or {}).items():
-        node = names.get(switch)
-        plug = (node + ".FKIKBlend") if node else ""
-        if not plug or not cmds.objExists(plug):
+        plug = plugs.get(switch)
+        if not plug:
             continue
         if cmds.getAttr(plug, lock=True):
             continue
         # A key on the channel would win the moment the timeline moved, so the
         # take's own keys go before the value does.
         if cmds.keyframe(plug, query=True, keyframeCount=True):
-            cmds.cutKey(node, attribute="FKIKBlend", clear=True)
+            node, attribute = plug.rsplit(".", 1)
+            cmds.cutKey(node, attribute=attribute, clear=True)
         if abs(cmds.getAttr(plug) - value) > 1e-6:
             cmds.setAttr(plug, value)
             moved.append(switch)
@@ -1704,20 +2008,134 @@ AS_IK_LIMBS = {
          "end": "FKWrist_R", "tip": None},
     ),
 }
+# AZ Body Rig. `data` says where the rig's own record keeps the limb.
+AZ_IK_LIMBS = {
+    "legs": tuple(
+        {"switch": "%s_leg_switch_CTRL" % side, "ik": "%s_leg_IK_CTRL" % side,
+         "pole": "%s_leg_pole_CTRL" % side, "toes": "%s_toes_IK_CTRL" % side,
+         "upper": "%s_hip_FK_CTRL" % side, "mid": "%s_knee_FK_CTRL" % side,
+         "end": "%s_ankle_FK_CTRL" % side, "tip": "%s_ball_FK_CTRL" % side,
+         "data": ("legs", side)}
+        for side in "LR"),
+    "arms": tuple(
+        {"switch": "%s_arm_switch_CTRL" % side, "ik": "%s_arm_IK_CTRL" % side,
+         "pole": "%s_arm_pole_CTRL" % side, "toes": None,
+         "upper": "%s_shoulder_FK_CTRL" % side, "mid": "%s_elbow_FK_CTRL" % side,
+         "end": "%s_wrist_FK_CTRL" % side, "tip": None, "data": ("arms", side)}
+        for side in "LR"),
+}
+# Each rig family's limbs, their blend attribute and the value that means IK.
+IK_LIMB_SETS = ((AS_IK_LIMBS, "FKIKBlend", 10.0), (AZ_IK_LIMBS, "fkIk", 1.0))
+_LIMB_NODES = ("switch", "ik", "pole", "toes", "upper", "mid", "end", "tip")
+
+# AZ Body Rig's IK spine: hips and chest controls at the ends, a mid control
+# that bends the spline between them.
+AZ_IK_SPINE = {"switch": "C_spine_switch_CTRL", "hips": "C_hips_IK_CTRL",
+               "mid": "C_spine_mid_IK_CTRL", "chest": "C_chest_IK_CTRL"}
+_AZ_SPINE_JOINT = re.compile(r"^C_spine_\d\d_JNT$")
+
+# The spine choices come after the first four, whose places the rigs and the
+# preferences already keep.
 IK_LIMB_CHOICES = (("FK controls", ()), ("IK legs", ("legs",)),
-                   ("IK legs and arms", ("legs", "arms")), ("IK arms", ("arms",)))
+                   ("IK legs and arms", ("legs", "arms")), ("IK arms", ("arms",)),
+                   ("IK legs and spine", ("legs", "spine")),
+                   ("IK legs, arms and spine", ("legs", "arms", "spine")),
+                   ("IK spine", ("spine",)))
 
 
 def _ik_limbs(root, which=("legs", "arms")):
-    """The limbs this rig has, with every name resolved to a node. Empty if none."""
+    """The limbs this rig has, with every name resolved to a node. Empty if none.
+
+    Each also carries its blend plug, the value that puts it in IK and, on an
+    AZ Body Rig, the plugs of its IK frames.
+    """
     controls = _by_short_name(root)
     found = []
-    for kind in which:
-        for limb in AS_IK_LIMBS[kind]:
-            if all(name in controls for name in limb.values() if name):
-                found.append(dict((key, controls[name] if name else None)
-                                  for key, name in limb.items()))
+    for limbs, attribute, ik_value in IK_LIMB_SETS:
+        for kind in which:
+            for limb in limbs.get(kind, ()):
+                if not all(limb[key] in controls for key in _LIMB_NODES if limb[key]):
+                    continue
+                resolved = dict((key, controls[limb[key]] if limb[key] else None)
+                                for key in _LIMB_NODES)
+                resolved["blend"] = resolved["switch"] + "." + attribute
+                resolved["ik_value"] = ik_value
+                resolved["frames"] = _az_ik_frames(root, limb.get("data"))
+                found.append(resolved)
     return found
+
+
+def _az_ik_frames(root, where):
+    """The plugs AZ Body Rig's FK/IK match reads a limb's IK pose from, or None.
+
+    Each holds the world matrix one FK control would need to take the IK pose,
+    twist included - the rig's deform shoulder and hip carry none of it.
+    """
+    if not where or not cmds.attributeQuery(AZ_RIG_DATA_ATTR, node=root, exists=True):
+        return None
+    try:
+        data = json.loads(cmds.getAttr(root + "." + AZ_RIG_DATA_ATTR) or "{}")
+        plugs = data[where[0]][where[1]]["ik_plugs"]
+    except (ValueError, KeyError, TypeError):
+        return None
+    prefix = _namespace_prefix(root)
+    plugs = [prefix + plug for plug in plugs]
+    return plugs if all(cmds.objExists(plug) for plug in plugs) else None
+
+
+def _namespace_prefix(root):
+    """The namespace the rig was brought in under, with its colon, or ""."""
+    namespace = root.split("|")[-1].rpartition(":")[0]
+    return namespace + ":" if namespace else ""
+
+
+def _ik_spine(root):
+    """AZ Body Rig's IK spine resolved to nodes and plugs, or None.
+
+    Every spine joint is driven by a blend of its FK and IK frames, and both
+    stay readable whichever way the blend points: `fk` and `ik` are those
+    frames, pelvis first, `out` what the joints take. `reads` pairs each
+    mapped control with the spine frame that carries its turn alone - the FK
+    spine shares a main control's turn over the joints up to the next main
+    one, so that is the last joint before it.
+    """
+    names = _by_short_name(root)
+    nodes = dict((key, names.get(name)) for key, name in AZ_IK_SPINE.items())
+    if not all(nodes.values()):
+        return None
+    count = sum(1 for name in names if _AZ_SPINE_JOINT.match(name))
+    prefix = _namespace_prefix(root)
+    blends = ["%sC_%s_blend_BMX" % (prefix, short) for short in
+              ["pelvis"] + ["spine_%02d" % (i + 1) for i in range(count)] + ["chest"]]
+    if not all(cmds.objExists(node) for node in blends):
+        return None
+    spine = dict(nodes)
+    spine["blend"] = nodes["switch"] + ".fkIk"
+    spine["fk"] = [node + ".inputMatrix" for node in blends]
+    spine["ik"] = [node + ".target[0].targetMatrix" for node in blends]
+    spine["out"] = [node + ".outputMatrix" for node in blends]
+    last = len(blends) - 1
+    mains = sorted(set([0, last // 2, last]))
+    reads = [("C_root_CTRL", 0), ("C_pelvis_FK_CTRL", max(1, mains[1] - 1))]
+    if len(mains) == 3:
+        reads.append(("C_spine_%02d_FK_CTRL" % mains[1], last - 1))
+    reads.append(("C_chest_FK_CTRL", last))
+    spine["reads"] = [(names[name], index) for name, index in reads if name in names]
+    return spine
+
+
+def _plug_world(plug):
+    return om2.MMatrix(cmds.getAttr(plug))
+
+
+def _plug_position(plug):
+    values = cmds.getAttr(plug)
+    return om2.MVector(values[12], values[13], values[14])
+
+
+def _turn_of(matrix):
+    return om2.MTransformationMatrix(om2.MMatrix(matrix)).rotation(
+        asQuaternion=True).asMatrix()
 
 
 def _deform_joint(root, control):
@@ -1733,6 +2151,9 @@ def _ik_controls(root):
     nodes = []
     for limb in _ik_limbs(root):
         nodes += [limb[key] for key in ("ik", "pole", "toes") if limb[key]]
+    spine = _ik_spine(root)
+    if spine:
+        nodes += [spine[key] for key in ("hips", "mid", "chest")]
     return nodes
 
 
@@ -1791,17 +2212,19 @@ def _with_bind_pose(root, measure):
 
 
 def _measure_at_bind(root, measure):
-    if not cmds.attributeQuery(BIND_ATTR, node=root, exists=True):
+    bind = _bind_record(root)
+    if not bind:
         raise RuntimeError("no bind pose is recorded for this rig")
-    bind = json.loads(cmds.getAttr(root + "." + BIND_ATTR) or "{}")
 
     controls = [node for node in _descendant_joints(root)
                 if cmds.listRelatives(node, shapes=True, type="nurbsCurve")]
     held = _hold_channels(controls)
     # A locked blend would stop the put-back below at its first plug.
-    blends = [(limb["switch"] + ".FKIKBlend",
-               cmds.getAttr(limb["switch"] + ".FKIKBlend")) for limb in _ik_limbs(root)
-              if cmds.getAttr(limb["switch"] + ".FKIKBlend", settable=True)]
+    blends = [(limb["blend"], cmds.getAttr(limb["blend"])) for limb in _ik_limbs(root)
+              if cmds.getAttr(limb["blend"], settable=True)]
+    spine = _ik_spine(root)
+    if spine and cmds.getAttr(spine["blend"], settable=True):
+        blends.append((spine["blend"], cmds.getAttr(spine["blend"])))
     now = cmds.currentTime(query=True)
     try:
         # A keyed channel takes a plain setAttr until the time next changes,
@@ -1824,17 +2247,31 @@ def _measure_at_bind(root, measure):
 
 def _ik_offsets(root):
     """Each IK control's offset from its bone at bind, measured once per rig."""
+    limbs = _ik_limbs(root)
+    spine = _ik_spine(root)
+    wanted = [limb["ik"] for limb in limbs]
+    if spine:
+        wanted += [spine["hips"], spine["chest"], "reach:" + spine["mid"]]
     if cmds.attributeQuery(IK_ATTR, node=root, exists=True):
         try:
             stored = json.loads(cmds.getAttr(root + "." + IK_ATTR) or "")
-            if stored:
+            # A rig measured before its spine could be baked has no spine yet.
+            if stored and all(key in stored for key in wanted):
                 return stored
         except ValueError:
             pass
     offsets = {}
 
     def measure():
-        for limb in _ik_limbs(root):
+        if spine:
+            fk = [_plug_world(plug) for plug in spine["fk"]]
+            offsets[spine["hips"]] = list(_world(spine["hips"]) * fk[0].inverse())
+            offsets[spine["chest"]] = list(_world(spine["chest"]) * fk[-1].inverse())
+            for control, index in spine["reads"]:
+                offsets["joint:" + control] = list(
+                    _world(control) * _plug_world(spine["out"][index]).inverse())
+            offsets["reach:" + spine["mid"]] = _spine_reach(spine)
+        for limb in limbs:
             offsets[limb["ik"]] = list(_world(limb["ik"]) * _world(limb["end"]).inverse())
             pole = [a - b for a, b in zip(_position(limb["pole"]), _position(limb["mid"]))]
             offsets[limb["pole"]] = pole
@@ -1856,8 +2293,7 @@ def _ik_offsets(root):
 
 def _match_limb(limb, offsets, last_pole):
     """Put one limb's IK controls where its bones are. Returns the pole direction."""
-    cmds.xform(limb["ik"], worldSpace=True,
-               matrix=list(om2.MMatrix(offsets[limb["ik"]]) * _world(limb["end"])))
+    _set_world_matrix(limb["ik"], om2.MMatrix(offsets[limb["ik"]]) * _world(limb["end"]))
 
     upper, mid, end = (_position(limb[key]) for key in ("upper", "mid", "end"))
     bend = [m - (u + e) * 0.5 for m, u, e in zip(mid, upper, end)]
@@ -1868,8 +2304,7 @@ def _match_limb(limb, offsets, last_pole):
         direction = [v / length for v in bend]
     else:
         direction = last_pole or [v / reach for v in offsets[limb["pole"]]]
-    cmds.xform(limb["pole"], worldSpace=True,
-               translation=[m + d * reach for m, d in zip(mid, direction)])
+    _set_world_position(limb["pole"], [m + d * reach for m, d in zip(mid, direction)])
 
     if limb["toes"]:
         _set_world_rotation(limb["toes"],
@@ -1878,29 +2313,125 @@ def _match_limb(limb, offsets, last_pole):
     return direction
 
 
+def _spine_reach(spine):
+    """How far each IK spine joint between the ends moves with the mid control.
+
+    Those joints sit on a spline whose points are fixed blends of the hips, mid
+    and chest controls, so each one follows a fixed share of the mid's move.
+    """
+    inner = spine["ik"][1:-1]
+    if not inner:
+        return []
+    mid = spine["mid"]
+    held = _hold_channels([mid])
+    start = om2.MVector(_position(mid))
+    before = [_plug_position(plug) for plug in inner]
+    step = 0.1 * ((_plug_position(spine["ik"][-1])
+                   - _plug_position(spine["ik"][0])).length() or 1.0)
+    try:
+        _set_world_position(mid, (start.x + step, start.y, start.z))
+        moved = om2.MVector(_position(mid)) - start
+        after = [_plug_position(plug) for plug in inner]
+    finally:
+        for plug, value in held:
+            cmds.setAttr(plug, value)
+    span = moved * moved
+    if span < 1e-12:
+        return [0.0] * len(inner)
+    return [((a - b) * moved) / span for a, b in zip(after, before)]
+
+
+def _match_spine(spine, offsets):
+    """Put the IK spine where the FK spine is.
+
+    The hips and chest controls take their joints' frames exactly. The mid
+    control keeps no turn of its own and goes where the joints between come
+    closest to theirs: they move by a fixed share of it, so the least-squares
+    place is one step away, and a second step catches a spine that is not fully
+    stretchy.
+    """
+    fk = [_plug_world(plug) for plug in spine["fk"]]
+    _set_world_matrix(spine["hips"], om2.MMatrix(offsets[spine["hips"]]) * fk[0])
+    _set_world_matrix(spine["chest"], om2.MMatrix(offsets[spine["chest"]]) * fk[-1])
+    mid = spine["mid"]
+    for axis in "XYZ":
+        plug = mid + ".rotate" + axis
+        if cmds.getAttr(plug, settable=True):
+            cmds.setAttr(plug, 0.0)
+    reach = offsets.get("reach:" + mid) or []
+    wanted = [om2.MVector(m[12], m[13], m[14]) for m in fk[1:-1]]
+    weight = sum(share * share for share in reach)
+    if not wanted or len(reach) != len(wanted) or weight < 1e-9:
+        return
+    for _step in range(2):
+        miss = om2.MVector()
+        for share, target, plug in zip(reach, wanted, spine["ik"][1:-1]):
+            miss = miss + (target - _plug_position(plug)) * share
+        if miss.length() < 1e-4:
+            break
+        at = om2.MVector(_position(mid)) + miss * (1.0 / weight)
+        _set_world_position(mid, (at.x, at.y, at.z))
+
+
+def _read_ik_spine(root, pairs, rest):
+    """(rotations, hips position) of an AZ Body Rig spine in IK, or ({}, None).
+
+    In IK the FK spine controls stay on the last bake, so the spine frames are
+    read instead, each through its control's offset from it at bind, and the
+    hips stand where the pelvis is.
+    """
+    spine = _ik_spine(root)
+    if not spine or cmds.getAttr(spine["blend"]) <= 0.5:
+        return {}, None
+    offsets = _ik_offsets(root)
+    source_of = dict((control, (source, rest[i]))
+                     for i, (source, control) in enumerate(pairs))
+    read = {}
+    for control, index in spine["reads"]:
+        offset = offsets.get("joint:" + control)
+        if not offset or control not in source_of:
+            continue
+        source, reference = source_of[control]
+        read[source] = (reference.inverse() * _turn_of(offset)
+                        * _turn_of(_plug_world(spine["out"][index])))
+    pelvis = _plug_position(spine["out"][0])
+    return read, [pelvis.x, pelvis.y, pelvis.z]
+
+
 def _read_ik_limbs(root, pairs, rest):
     """What a limb in IK is doing, in the terms the FK controls would use.
 
     In IK the FK controls stay on the last bake and say nothing about a pose made
     with the IK controls, so the deformation joints are read instead and put back
-    through each joint's offset from its FK control.
+    through each joint's offset from its FK control. AZ Body Rig hands over its
+    IK frames as its FK controls would take them, and those are read directly.
     """
     limbs = [limb for limb in _ik_limbs(root)
-             if cmds.getAttr(limb["switch"] + ".FKIKBlend") > 5.0]
+             if cmds.getAttr(limb["blend"]) > 0.5 * limb["ik_value"]]
     if not limbs:
         return {}
-    offsets = _ik_offsets(root)
     source_of = dict((control, (source, rest[i]))
                      for i, (source, control) in enumerate(pairs))
+    offsets = None
     read = {}
     for limb in limbs:
-        for key in ("upper", "mid", "end", "tip"):
+        for index, key in enumerate(("upper", "mid", "end", "tip")):
             control = limb[key]
-            offset = offsets.get("joint:%s" % control) if control else None
-            if not offset or control not in source_of:
+            if not control or control not in source_of:
+                continue
+            source, reference = source_of[control]
+            if limb["frames"]:
+                if index < len(limb["frames"]):
+                    world = om2.MMatrix(cmds.getAttr(limb["frames"][index]))
+                    read[source] = reference.inverse() * om2.MTransformationMatrix(
+                        world).rotation(asQuaternion=True).asMatrix()
+                continue
+            if offsets is None:
+                offsets = _ik_offsets(root)
+            offset = offsets.get("joint:%s" % control)
+            if not offset:
                 continue
             joint = _deform_joint(root, control)
-            source, reference = source_of[control]
             # Rotation alone: a stretchy limb scales its joints, and the model
             # has no use for that.
             read[source] = (reference.inverse()
@@ -1917,21 +2448,55 @@ def clear_ik_keys(root):
                 cmds.cutKey(node, attribute=attribute, clear=True)
 
 
-def set_limb_mode(root, which=()):
-    """Switch limbs to IK for the kinds in `which`, FK for the rest."""
-    for kind, limbs in AS_IK_LIMBS.items():
+def _hold_blend(plug, value, first=None, last=None):
+    """Put a FK/IK blend at `value`, and over frames first..last keep it there.
+
+    A keyed blend takes a plain setAttr only until the time moves, and AZ Body
+    Rig's own FK/IK match keys its switch with Auto Key on. Those keys took the
+    arms of a bake into IK back to FK by themselves, half way through the take.
+    So the take's own frames lose their keys, and where keys remain outside
+    them the take's value is keyed at both of its ends.
+    """
+    if cmds.getAttr(plug, lock=True):
+        return
+    node, attribute = plug.rsplit(".", 1)
+    if first is not None and cmds.keyframe(plug, query=True, keyframeCount=True):
+        cmds.cutKey(node, attribute=attribute, time=(first, last), clear=True)
+        if cmds.keyframe(plug, query=True, keyframeCount=True):
+            for frame in sorted(set((first, last))):
+                cmds.setKeyframe(node, attribute=attribute, time=frame, value=value,
+                                 inTangentType="linear", outTangentType="linear")
+    cmds.setAttr(plug, value)
+
+
+def set_limb_mode(root, which=(), first=None, last=None):
+    """Switch limbs and the spine to IK for the kinds in `which`, FK for the rest.
+
+    With a frame range the mode holds over it whatever keys the switches carry.
+    """
+    for kind in ("legs", "arms"):
         for limb in _ik_limbs(root, (kind,)):
-            cmds.setAttr(limb["switch"] + ".FKIKBlend", 10.0 if kind in which else 0.0)
+            _hold_blend(limb["blend"], limb["ik_value"] if kind in which else 0.0,
+                        first, last)
+    spine = _ik_spine(root)
+    if spine:
+        _hold_blend(spine["blend"], 1.0 if "spine" in which else 0.0, first, last)
+
+
+_SPINE_KEYED = ("translateX", "translateY", "translateZ", "rotateX", "rotateY", "rotateZ")
 
 
 def bake_ik(root, first, last, which):
     """Key the IK controls of `which` limbs from the FK bake, then switch to IK."""
     limbs = _ik_limbs(root, which)
-    if not limbs:
+    spine = _ik_spine(root) if "spine" in which else None
+    if not limbs and not spine:
         return 0
     offsets = _ik_offsets(root)
     for limb in limbs:
-        cmds.setAttr(limb["switch"] + ".FKIKBlend", 0.0)
+        _hold_blend(limb["blend"], 0.0, first, last)
+    if spine:
+        _hold_blend(spine["blend"], 0.0, first, last)
     restore = cmds.currentTime(query=True)
     poles = {}
     try:
@@ -1948,6 +2513,10 @@ def bake_ik(root, first, last, which):
                 if limb["toes"]:
                     cmds.setKeyframe(limb["toes"], time=frame,
                                      attribute=("rotateX", "rotateY", "rotateZ"))
+            if spine:
+                _match_spine(spine, offsets)
+                for key in ("hips", "mid", "chest"):
+                    cmds.setKeyframe(spine[key], time=frame, attribute=_SPINE_KEYED)
     finally:
         cmds.refresh(suspend=False)
         cmds.currentTime(restore, edit=True)
@@ -1956,23 +2525,36 @@ def bake_ik(root, first, last, which):
             if limb[key]:
                 cmds.filterCurve(limb[key] + ".rotateX", limb[key] + ".rotateY",
                                  limb[key] + ".rotateZ", filter="euler")
-        cmds.setAttr(limb["switch"] + ".FKIKBlend", 10.0)
-    return len(limbs)
+        _hold_blend(limb["blend"], limb["ik_value"], first, last)
+    if spine:
+        for key in ("hips", "mid", "chest"):
+            cmds.filterCurve(spine[key] + ".rotateX", spine[key] + ".rotateY",
+                             spine[key] + ".rotateZ", filter="euler")
+        _hold_blend(spine["blend"], 1.0, first, last)
+    return len(limbs) + (1 if spine else 0)
 
 
 def match_ik_now(root):
-    """Bring limbs in IK to the FK pose on the current frame, unkeyed."""
+    """Bring limbs and a spine in IK to the FK pose on the current frame, unkeyed."""
     limbs = [limb for limb in _ik_limbs(root)
-             if cmds.getAttr(limb["switch"] + ".FKIKBlend") > 5.0]
-    if not limbs:
+             if cmds.getAttr(limb["blend"]) > 0.5 * limb["ik_value"]]
+    spine = _ik_spine(root)
+    if spine and cmds.getAttr(spine["blend"]) <= 0.5:
+        spine = None
+    if not limbs and not spine:
         return
     offsets = _ik_offsets(root)
     for limb in limbs:
-        cmds.setAttr(limb["switch"] + ".FKIKBlend", 0.0)
+        cmds.setAttr(limb["blend"], 0.0)
+    if spine:
+        cmds.setAttr(spine["blend"], 0.0)
+        _match_spine(spine, offsets)
     for limb in limbs:
         _match_limb(limb, offsets, None)
     for limb in limbs:
-        cmds.setAttr(limb["switch"] + ".FKIKBlend", 10.0)
+        cmds.setAttr(limb["blend"], limb["ik_value"])
+    if spine:
+        cmds.setAttr(spine["blend"], 1.0)
 
 
 # --------------------------------------------------------------------------- #
@@ -2420,8 +3002,7 @@ def lock_feet(feet, first, last, hips, travel=None, anchors=(), levels=()):
             else:
                 cmds.currentTime(frame, edit=True)
                 at = cmds.xform(hips, query=True, worldSpace=True, translation=True)
-                cmds.xform(hips, worldSpace=True,
-                           translation=(at[0] + x, at[1], at[2] + z))
+                _set_world_position(hips, (at[0] + x, at[1], at[2] + z))
                 cmds.setKeyframe(hips, attribute=("translateX", "translateY",
                                                   "translateZ"), time=frame)
     finally:
@@ -2437,7 +3018,7 @@ def main_lift(target_root):
     sees it. A jump is motion: the model solves it, and Main only carries it. So
     this is the first part, and everything above it counts as the model's.
     """
-    travel = _by_short_name(target_root).get(AS_TRAVEL_CONTROL)
+    travel = _travel_control(target_root)
     if not travel:
         return 0.0
     base = _main_base(target_root, cmds.currentTime(query=True))
@@ -2471,7 +3052,7 @@ def remember_main_base(root, first, last, levels=(), ground=None):
     Comparing with the curve would miss a drag made with auto key on, since the
     curve then already holds the new value.
     """
-    travel = _by_short_name(root).get(AS_TRAVEL_CONTROL)
+    travel = _travel_control(root)
     if not travel:
         return
     base = {}
@@ -2513,7 +3094,7 @@ def _main_base(root, frame):
 
 def main_above(root):
     """How far Main is above what the character stands on, at the current frame."""
-    travel = _by_short_name(root).get(AS_TRAVEL_CONTROL)
+    travel = _travel_control(root)
     return cmds.getAttr(travel + ".translateY") - main_lift(root) if travel else 0.0
 
 
@@ -2524,7 +3105,7 @@ def _base_turn(base):
 
 def main_turn(root):
     """(how far Main has been turned from the bake, its rotateY now), in degrees."""
-    travel = _by_short_name(root).get(AS_TRAVEL_CONTROL)
+    travel = _travel_control(root)
     if not travel:
         return 0.0, None
     now = cmds.getAttr(travel + ".rotateY")
@@ -2534,7 +3115,7 @@ def main_turn(root):
 
 def main_place(root):
     """(how far Main has been dragged from the bake, where it is now), or Nones."""
-    travel = _by_short_name(root).get(AS_TRAVEL_CONTROL)
+    travel = _travel_control(root)
     if not travel:
         return None, None
     now = _main_translate(travel)
@@ -2655,7 +3236,7 @@ def pose_main_above(root, poses, frame, start_frame):
     if not first:
         return main_above(root)
     ground = _base_ground(first)
-    travel = _by_short_name(root).get(AS_TRAVEL_CONTROL)
+    travel = _travel_control(root)
     height = cmds.getAttr(travel + ".translateY")
     base = _base_near(bases, take_frame_to_scene(frame, start_frame))
     if (base and abs(height - base[1]) < 1e-3
@@ -2742,21 +3323,32 @@ def warp_pose_roots(poses, root, start_frame, released=(), skeleton=SOMA30):
     marks = [(frame, pin["place"]) for frame, pin in sorted(poses.items())
              if pin.get("place")
              and abs(pin["place"][0]) + abs(pin["place"][2]) > 0.01]
+    dragged = [frame for frame, _delta in marks]
+    # A pose placed before stays where it was put, so a drag stretches the path
+    # from the placed pose before it, not from the start of the take. Ramping
+    # from the start took a pose placed and solved earlier most of the way with
+    # a later drag - 70% of a drag at frame 72 moved the pose at frame 51 - and
+    # the character ran on the spot between the two.
+    anchors = [(frame, (0.0, 0.0, 0.0)) for frame, pin in sorted(poses.items())
+               if pin.get("edited", True) and pin.get("main_target")
+               and frame not in dragged]
+    points = sorted(marks + anchors, key=lambda point: point[0])
     # Between two placements that differ on the ground the old gait cannot carry
     # the character there, so poses read from the animation hold only the path
     # and the model finds the steps.
     travelling = []
     previous_frame, previous = 0, [0.0, 0.0, 0.0]
-    for frame, delta in marks:
+    for frame, delta in points:
         if abs(delta[0] - previous[0]) + abs(delta[2] - previous[2]) > 1.0:
             travelling.append((previous_frame, frame))
         previous_frame, previous = frame, delta
-    dragged = [frame for frame, _delta in marks]
     roots = dict((frame, list(pin["root"])) for frame, pin in poses.items())
     targets = dict((frame, list(pin["main_target"])) for frame, pin in poses.items()
                    if pin.get("edited", True) and pin.get("main_target"))
+    # Analyzed poses remember Main's turn too, and swing round with a turn made
+    # before them like everything else after it.
     facing = dict((frame, pin["main_turn"]) for frame, pin in poses.items()
-                  if pin.get("edited", True) and pin.get("main_turn") is not None)
+                  if pin.get("main_turn") is not None)
     angles = dict.fromkeys(poses, 0.0)
     turn_marks = [(frame, pin["place_turn"]) for frame, pin in sorted(poses.items())
                   if abs(pin.get("place_turn", 0.0)) > 0.1]
@@ -2804,18 +3396,23 @@ def warp_pose_roots(poses, root, start_frame, released=(), skeleton=SOMA30):
                 and abs(pin["place"][1]) > 0.01 and not _holds_level(pin, ground)):
             shifted["main_above"] = _above_others(
                 poses, frame, start_frame, last_baked, ground, pin["main_target"][1])
+        # A pose the solve leaves free - holding only the path, or sitting out
+        # next to an edit - says nothing about where the body will face, so Main
+        # follows the body there rather than an old turn.
         if not edited and any(a < frame < b for a, b in travelling):
             reshape_pin(shifted, "root")
+            shifted.pop("main_turn", None)
         # Next to an edit the old height no longer describes anything, and
         # writing it back would keep a hump alive after its cause has gone.
         if not edited and any(abs(frame - other) <= EDIT_FREE_WINDOW for other in free):
             shifted["main_above"] = 0.0
+            shifted.pop("main_turn", None)
         new_root = roots[frame]
         target = targets.get(frame)
         for axis in (0, 2):
             if not marks:
                 break
-            step = _ramp([(f, delta[axis]) for f, delta in marks], frame, 0)
+            step = _ramp([(f, delta[axis]) for f, delta in points], frame, 0)
             new_root[axis] += to_model * step
             # A pose placed earlier has to move with the path, or the fit would
             # walk the character back to it.
@@ -2855,7 +3452,11 @@ def _main_turns(source_by_name, start_frame, frames, poses):
     """Main's rotateY on each frame of a take, or None if the take has no legs.
 
     It follows where the take faces, measured as the generator measures it,
-    and lands exactly on the rotation each edited pose asks for.
+    and lands exactly on every pose that remembers a turn: an edited pose on
+    the one it asks for, an analyzed one on the one Main had when it was read.
+    What landing takes is ramped from one such pose to the next. With edited
+    poses alone it was ramped in from the start of the take and held to its
+    end, and Main turned away from the body on frames nobody had touched.
     """
     left = source_by_name.get("LeftLeg")
     right = source_by_name.get("RightLeg")
@@ -2875,7 +3476,7 @@ def _main_turns(source_by_name, start_frame, frames, poses):
     turns = _blurred(headings, radius)
     marks = []
     for frame, pin in sorted((poses or {}).items()):
-        if pin.get("edited", True) and pin.get("main_turn") is not None:
+        if pin.get("main_turn") is not None:
             index = min(max(take_frame_to_scene(frame, start_frame) - start_frame, 0),
                         frames - 1)
             marks.append((index, (pin["main_turn"] - turns[index] + 180.0) % 360.0 - 180.0))
@@ -2892,6 +3493,15 @@ def main_targets(poses, start_frame):
 
 
 POSE_BLEND_SECONDS = 0.5  # how long the bake takes to ease into an edited pose
+
+
+# A pose the take misses by more than this on a joint is not one it fell short
+# of but one that contradicts it there: blending that in turned the arm half
+# way round over the blend window. Such a joint is left to the solve.
+POSE_GAP_LIMIT = 90.0
+# Update refuses a body read this far round from the animation with Main where
+# the bake left it - see the window's _capture_pose.
+POSE_TURN_LIMIT = 120.0
 
 
 def _pose_gaps(pairs, source_by_name, skeleton, start_frame, frames, poses, scale,
@@ -2913,6 +3523,7 @@ def _pose_gaps(pairs, source_by_name, skeleton, start_frame, frames, poses, scal
         damped = _damped_neck(source_by_name, neck_damping)
         unread = pin.get("unread") or ()
         turns = {}
+        skipped = []
         for source, _target in pairs:
             name = name_of[source]
             if name in unread:
@@ -2925,7 +3536,14 @@ def _pose_gaps(pairs, source_by_name, skeleton, start_frame, frames, poses, scal
                 taken.inverse() * wanted).rotation(asQuaternion=True)
             if turn.w < 0.0:
                 turn = om2.MQuaternion(-turn.x, -turn.y, -turn.z, -turn.w)
+            if math.degrees(2.0 * math.acos(min(1.0, turn.w))) > POSE_GAP_LIMIT:
+                skipped.append(name)
+                continue
             turns[source] = turn
+        if skipped:
+            print("[AZ Kimodo Motion %s] the pose on take frame %d is more than %d "
+                  "degrees from the solve at %s - left to the solve there"
+                  % (VERSION, frame, POSE_GAP_LIMIT, ", ".join(skipped)))
         hips = cmds.xform(source_by_name[names[0]], query=True, worldSpace=True,
                           translation=True)
         gaps[index] = (turns, (pin["root"][1] * scale - hips[1]) * hips_scale)
@@ -3004,12 +3622,11 @@ def retarget(source_joints, skeleton_key, target_root, start_frame, frames,
     source_height = source_hip_height(skeleton, scale)
 
     travel = None
-    if travel_on_root and target_key == AS_MANNY:
-        travel = _by_short_name(target_root).get(AS_TRAVEL_CONTROL)
+    if travel_on_root and target_key in TRAVEL_CONTROLS:
+        travel = _by_short_name(target_root).get(TRAVEL_CONTROLS[target_key])
 
-    if target_key == AS_MANNY:
-        remember_fkik(target_root)
-    switched = switch_to_fk(target_root) if target_key == AS_MANNY else []
+    remember_fkik(target_root)
+    switched = switch_to_fk(target_root)
     if switched:
         print("[AZ Kimodo Motion %s] moved to FK: %s"
               % (VERSION, ", ".join(switched)))
@@ -3037,8 +3654,7 @@ def retarget(source_joints, skeleton_key, target_root, start_frame, frames,
         clear_retarget_keys(target_joints, hips_target, travel)
         if travel and cmds.getAttr(travel + ".translateY", settable=True):
             cmds.setAttr(travel + ".translateY", ground)
-        if target_key == AS_MANNY:
-            clear_ik_keys(target_root)
+        clear_ik_keys(target_root)
         if write_start is None:
             write_start = start_frame
         if travel:
@@ -3059,6 +3675,11 @@ def retarget(source_joints, skeleton_key, target_root, start_frame, frames,
         if stands_on is not None and cmds.getAttr(travel + ".translateY", settable=True):
             cmds.setAttr(travel + ".translateY", stands_on)
             main_keys = {write_start: stands_on}
+
+    # Over its own frames the take decides the blends: a switch keyed by the
+    # rig's FK/IK match would otherwise put a limb back the moment time moves.
+    for plug in _fkik_plugs(target_root).values():
+        _hold_blend(plug, 0.0, write_start, write_start + frames - 1)
 
     signature = _rest_signature(skeleton["key"], target_key, align_rest,
                                 drop_twist)
@@ -3156,7 +3777,7 @@ def retarget(source_joints, skeleton_key, target_root, start_frame, frames,
                 if main_turns:
                     cmds.setAttr(travel + ".rotateY", main_turns[frame])
                     cmds.setKeyframe(travel, attribute="rotateY", time=write_at)
-            cmds.xform(hips_target, worldSpace=True, translation=placed)
+            _set_world_position(hips_target, placed)
             cmds.setKeyframe(hips_target,
                              attribute=("translateX", "translateY",
                                         "translateZ"), time=write_at)
@@ -3203,7 +3824,7 @@ def retarget(source_joints, skeleton_key, target_root, start_frame, frames,
     if arm_clearance is not None:
         arms_moved = keep_arms_out(target_root, write_start, end_frame, arm_clearance,
                                    skeleton, keep_frames)
-    if ik_limbs and target_key == AS_MANNY:
+    if ik_limbs:
         bake_ik(target_root, write_start, end_frame, ik_limbs)
     if mode == "replace" and travel:
         remember_main_base(target_root, write_start, end_frame, levels, ground)
@@ -3440,10 +4061,14 @@ def bone_source_root(target_root):
     the control group.
     """
     try:
-        if identify_target(target_root) == UE5_MANNY:
-            return target_root, UE5_MANNY
+        key = identify_target(target_root)
     except Exception:
-        pass
+        key = ""
+    # A skeleton is read where it is written. So is AZ Body Rig: its FK
+    # controls carry the whole pose, and a limb in IK reads through the frames
+    # the rig's own match uses.
+    if key in (UE5_MANNY, AZ_BODY_RIG):
+        return target_root, key
 
     found = []
     for node in cmds.ls(assemblies=True, long=True):
@@ -3462,15 +4087,9 @@ def bone_source_root(target_root):
 
 
 def _hold_fkik(root):
-    """Current FKIKBlend values, so switch_to_fk can be undone."""
-    names = _by_short_name(root)
-    held = []
-    for switch in AS_FKIK_SWITCHES:
-        node = names.get(switch)
-        plug = (node + ".FKIKBlend") if node else ""
-        if plug and cmds.objExists(plug) and not cmds.getAttr(plug, lock=True):
-            held.append((plug, cmds.getAttr(plug)))
-    return held
+    """Current FK/IK blend values, so switch_to_fk can be undone."""
+    return [(plug, cmds.getAttr(plug)) for plug in _fkik_plugs(root).values()
+            if not cmds.getAttr(plug, lock=True)]
 
 
 def _undriven_bones(pairs, control_pairs, probe=15.0):
@@ -3668,8 +4287,20 @@ def capture_reference_rest(target_root, skeleton, target_key="", bind_root=None,
             if measured is not None:
                 rest, unfollowed = measured
         if rest is None:
-            rest = align_to_source_rest(pairs, mapping, skeleton, scale,
-                                        rotate_orders, drop_twist)
+            # Measured as a bake sees the rig, every blend in FK. An AZ Body Rig
+            # spine ships in IK, and its chest - the neck and the arms with it -
+            # would not follow the FK spine as it is swung.
+            fkik = _hold_fkik(bind_root)
+            try:
+                switch_to_fk(bind_root)
+                rest = align_to_source_rest(pairs, mapping, skeleton, scale,
+                                            rotate_orders, drop_twist)
+            finally:
+                for plug, value in fkik:
+                    try:
+                        cmds.setAttr(plug, value)
+                    except Exception:
+                        pass
         write_stored_rest(bind_root, signature, rest, rest_hips, hips_scale,
                           unfollowed)
     finally:
@@ -3721,7 +4352,7 @@ def character_file():
     """The rig file the window opens on its own, or "" when none is known.
 
     $AZ_KIMODO_CHARACTER wins, then whatever was last picked in the UI, then
-    a character folder beside the install.
+    a character folder beside the install, then the known copy.
     """
     path = os.environ.get(CHARACTER_ENV, "")
     if path and os.path.isfile(path):
@@ -3830,7 +4461,9 @@ def ensure_character(path=None):
     notes = []
     if not has_bind_pose(root):
         if is_animated(root, target_key=key):
-            notes.append("the rig is animated and has no recorded bind pose - "
+            notes.append("no recorded bind pose - its controls at zero are "
+                         "taken as bind" if bind_from_controls(root) else
+                         "the rig is animated and has no recorded bind pose - "
                          "put it at bind and press Remember bind pose")
         else:
             with undo_chunk("measure rig"):
@@ -3903,6 +4536,34 @@ def solve_text(target_root):
     return cmds.getAttr(target_root + "." + SOLVE_ATTR) or ""
 
 
+KEY_POSES_ATTR = "azKimodoKeyPoses"
+
+
+def remember_key_poses(target_root, poses):
+    """Keep the poses made by hand for pose to pose on the rig, in frame order.
+
+    On the rig rather than in the window, so they survive closing it and
+    saving the scene, and an undo takes them back with everything else.
+    """
+    if not cmds.attributeQuery(KEY_POSES_ATTR, node=target_root, exists=True):
+        cmds.addAttr(target_root, longName=KEY_POSES_ATTR, dataType="string")
+    cmds.setAttr(target_root + "." + KEY_POSES_ATTR,
+                 json.dumps(sorted(poses, key=lambda pin: pin["frame"])),
+                 type="string")
+
+
+def read_key_poses(target_root):
+    """The poses made by hand that are kept on the rig, in frame order."""
+    if not cmds.attributeQuery(KEY_POSES_ATTR, node=target_root, exists=True):
+        return []
+    try:
+        poses = json.loads(cmds.getAttr(target_root + "." + KEY_POSES_ATTR) or "[]")
+    except ValueError:
+        return []
+    return sorted((pin for pin in poses if isinstance(pin, dict) and "frame" in pin),
+                  key=lambda pin: pin["frame"])
+
+
 def read_pose_state(target_root):
     """(unapplied frames, released frames, changed, limb choice) kept with the solve."""
     try:
@@ -3941,6 +4602,7 @@ def pose_frames(frames, start_frame, step):
 def analyze_poses(target_root, frames, start_frame):
     """{model frame: pin} read off the rig's animation. Moves the timeline."""
     poses = {}
+    travel = _travel_control(target_root)
     with quietly():
         restore = cmds.currentTime(query=True)
         try:
@@ -3949,6 +4611,10 @@ def analyze_poses(target_root, frames, start_frame):
                 pin = capture_pose_from_rig(target_root, frame, "full")
                 pin["edited"] = False
                 pin["main_above"] = main_above(target_root)
+                # Which way Main points here, so the next solve keeps it there:
+                # an arrow that wanders off the body sends the next turn astray.
+                if travel:
+                    pin["main_turn"] = cmds.getAttr(travel + ".rotateY")
                 poses[frame] = pin
         finally:
             cmds.currentTime(restore, edit=True)
@@ -4108,7 +4774,7 @@ def take_pose_at(target_root, frame, skeleton_key="soma30"):
     skeleton = SOMA30 if skeleton_key == SOMA30["key"] else G1SKEL34
     pairs, _mapping, _key = target_pairs(target_root, skeleton)
     nodes = [control for _source, control in pairs] + _ik_controls(target_root)
-    travel = _by_short_name(target_root).get(AS_TRAVEL_CONTROL)
+    travel = _travel_control(target_root)
     if travel:
         nodes.append(travel)
     held = _hold_channels(nodes)
@@ -4149,6 +4815,165 @@ def load_pose_on_rig(target_root, pin, skeleton_key="soma30"):
         cmds.autoKeyframe(state=keying)
 
 
+# Pose to pose has no prompt of its own: the poses say what happens, and the
+# model only needs to be told to move between them.
+KEY_POSE_PROMPT = "A person moves smoothly from one pose to the next."
+_POSE_CHANNELS = ("translateX", "translateY", "translateZ",
+                  "rotateX", "rotateY", "rotateZ", "scaleX", "scaleY", "scaleZ")
+
+
+def key_pose_range(start_frame):
+    """(first, last) scene frames a pose to pose take can cover."""
+    return int(start_frame), take_frame_to_scene(MAX_FRAMES - 1, start_frame)
+
+
+def fit_timeline(first, last):
+    """Put the time slider on first..last and the current time inside it.
+
+    Returns the range it had, for restore_timeline.
+    """
+    saved = {"min": cmds.playbackOptions(query=True, minTime=True),
+             "max": cmds.playbackOptions(query=True, maxTime=True),
+             "start": cmds.playbackOptions(query=True, animationStartTime=True),
+             "end": cmds.playbackOptions(query=True, animationEndTime=True)}
+    cmds.playbackOptions(animationStartTime=first, animationEndTime=last,
+                         minTime=first, maxTime=last)
+    now = cmds.currentTime(query=True)
+    if now < first or now > last:
+        cmds.currentTime(min(max(now, first), last), edit=True)
+    return saved
+
+
+def restore_timeline(saved):
+    """Put back a range fit_timeline replaced."""
+    if not saved:
+        return
+    cmds.playbackOptions(animationStartTime=saved["start"],
+                         animationEndTime=saved["end"],
+                         minTime=saved["min"], maxTime=saved["max"])
+
+
+def key_pose_frames(poses):
+    """Length of a pose to pose take: from its first frame to the last pose."""
+    last = max([int(pin["frame"]) for pin in poses] or [0])
+    return min(MAX_FRAMES, max(MIN_FRAMES, last + 1))
+
+
+def _rig_controls(target_root):
+    """What an animator keys on this rig: its controls, or a bare skeleton's joints."""
+    controls = _az_controls(target_root)
+    if controls:
+        return controls
+    nodes = _descendant_joints(target_root)
+    curves = [node for node in nodes
+              if cmds.listRelatives(node, shapes=True, type="nurbsCurve")]
+    return curves or [node for node in nodes if cmds.nodeType(node) == "joint"]
+
+
+def _rest_value(node, attribute, rest):
+    """A channel's value at rest: the bind pose where it is recorded, else its default."""
+    for base in ("translate", "rotate"):
+        if attribute.startswith(base) and len(attribute) == len(base) + 1:
+            values = rest.get(base)
+            return float(values["XYZ".index(attribute[-1])]) if values else 0.0
+    if attribute.startswith("scale") and len(attribute) == 6:
+        return 1.0
+    try:
+        default = cmds.attributeQuery(attribute, node=node, listDefault=True)
+        return float(default[0]) if default else 0.0
+    except Exception:
+        return 0.0
+
+
+def key_posed_channels(target_root):
+    """Key the pose on the current frame. Returns how many channels were keyed.
+
+    Every control channel off its rest value is keyed - that is what was
+    posed - and every channel already animated too, so a channel brought back
+    to rest holds there on this frame instead of following its curve. Locked
+    channels and channels the rig drives itself are left alone.
+    """
+    now = cmds.currentTime(query=True)
+    bind = _bind_record(target_root)
+    keyed = 0
+    for node in _rig_controls(target_root):
+        rest = bind.get(node.split("|")[-1]) or {}
+        attributes = list(_POSE_CHANNELS) + (
+            cmds.listAttr(node, userDefined=True, keyable=True) or [])
+        chosen = []
+        for attribute in attributes:
+            plug = node + "." + attribute
+            try:
+                if (not cmds.objExists(plug) or cmds.getAttr(plug, lock=True)
+                        or not cmds.getAttr(plug, keyable=True)):
+                    continue
+                value = cmds.getAttr(plug)
+            except Exception:
+                continue
+            if isinstance(value, (list, tuple)) or not isinstance(value, (int, float)):
+                continue
+            sources = cmds.listConnections(plug, source=True, destination=False,
+                                           skipConversionNodes=True) or []
+            animated = bool(sources) and all(
+                cmds.nodeType(source).startswith("animCurve") for source in sources)
+            if sources and not animated:
+                continue
+            if animated or abs(float(value) - _rest_value(node, attribute, rest)) > 1e-4:
+                chosen.append(attribute)
+        if chosen:
+            cmds.setKeyframe(node, attribute=chosen, time=now)
+            keyed += len(chosen)
+    return keyed
+
+
+def cut_pose_keys(target_root, frame):
+    """Take every control key off a scene frame. Returns how many controls had one."""
+    cut = 0
+    for node in _rig_controls(target_root):
+        if cmds.keyframe(node, query=True, time=(frame, frame), keyframeCount=True):
+            cmds.cutKey(node, time=(frame, frame), clear=True)
+            cut += 1
+    return cut
+
+
+def read_key_pose(target_root, frame):
+    """The character's pose as it stands now, as a pose to generate through.
+
+    Nothing moves the timeline, so a pose made with Auto Key off is read as
+    it is on the screen rather than as the curves would have it.
+    """
+    with quietly():
+        pin = capture_pose_from_rig(target_root, frame, "full")
+    pin["edited"] = True
+    return pin
+
+
+def show_key_pose(target_root, pin, skeleton_key="soma30"):
+    """Put a pose made by hand back on the rig where it was made, unkeyed.
+
+    load_pose_on_rig leaves the character where the animation has it on the
+    ground. A pose made by hand also says where the character stood, so the
+    hips go back there and the IK limbs are matched again after the move.
+    """
+    keying = cmds.autoKeyframe(query=True, state=True)
+    cmds.autoKeyframe(state=False)
+    try:
+        _put_pose_on_rig(target_root, pin, skeleton_key)
+        scene = pin.get("scene_root")
+        if not scene:
+            return
+        skeleton = SOMA30 if skeleton_key == SOMA30["key"] else G1SKEL34
+        bone_root, bone_key = bone_source_root(target_root)
+        hips_bone = target_pairs(bone_root, skeleton, bone_key)[0][0][1]
+        now = cmds.xform(hips_bone, query=True, worldSpace=True, translation=True)
+        hips = target_pairs(target_root, skeleton)[0][0][1]
+        at = cmds.xform(hips, query=True, worldSpace=True, translation=True)
+        _set_world_position(hips, [a + s - n for a, s, n in zip(at, scene, now)])
+        match_ik_now(target_root)
+    finally:
+        cmds.autoKeyframe(state=keying)
+
+
 def _put_pose_on_rig(target_root, pin, skeleton_key):
     skeleton = SOMA30 if skeleton_key == SOMA30["key"] else G1SKEL34
     pairs, _mapping, key = target_pairs(target_root, skeleton)
@@ -4158,7 +4983,7 @@ def _put_pose_on_rig(target_root, pin, skeleton_key):
         raise RuntimeError("the rig has not been retargeted yet - generate an "
                            "animation first")
     placed = pin.get("main_target")
-    travel = _by_short_name(target_root).get(AS_TRAVEL_CONTROL)
+    travel = _travel_control(target_root)
     if placed and travel:
         for axis, value in zip("XYZ", placed):
             plug = travel + ".translate" + axis
@@ -4187,7 +5012,7 @@ def _put_pose_on_rig(target_root, pin, skeleton_key):
                                      translation=True)[1]
         hips = pairs[0][1]
         at = cmds.xform(hips, query=True, worldSpace=True, translation=True)
-        cmds.xform(hips, worldSpace=True, translation=(at[0], at[1] + rise, at[2]))
+        _set_world_position(hips, (at[0], at[1] + rise, at[2]))
     match_ik_now(target_root)
 
 
@@ -4196,7 +5021,7 @@ def has_unkeyed_pose(target_root, skeleton_key="soma30"):
     skeleton = SOMA30 if skeleton_key == SOMA30["key"] else G1SKEL34
     now = cmds.currentTime(query=True)
     pairs, _mapping, _key = target_pairs(target_root, skeleton)
-    travel = _by_short_name(target_root).get(AS_TRAVEL_CONTROL)
+    travel = _travel_control(target_root)
     for control in ([control for _source, control in pairs] + _ik_controls(target_root)
                     + ([travel] if travel else [])):
         for attribute in _KEYED_ATTRIBUTES:
@@ -4254,8 +5079,11 @@ def capture_pose_from_rig(target_root, frame, mode="full",
         by_name[source_name] = rest[index].inverse() * _rotation_matrix(target)
     if skip and pose_root != target_root:
         by_name.update(_read_controls(target_root, skeleton, skip))
+    spine_hips = None
     if pose_root == target_root:
         by_name.update(_read_ik_limbs(target_root, pairs, rest))
+        spine_read, spine_hips = _read_ik_spine(target_root, pairs, rest)
+        by_name.update(spine_read)
 
     # A joint the map does not reach has no orientation of its own to read, so
     # it inherits its parent's - the same thing a zero local rotation means.
@@ -4269,7 +5097,8 @@ def capture_pose_from_rig(target_root, frame, mode="full",
 
     scale = scene_scale()
     height = source_hip_height(skeleton, scale)
-    hips = cmds.xform(pairs[0][1], query=True, worldSpace=True, translation=True)
+    hips = spine_hips or cmds.xform(pairs[0][1], query=True, worldSpace=True,
+                                    translation=True)
     lift = main_lift(target_root)
     root = [(hips[0] - rest_hips[0]) / hips_scale / scale,
             ((hips[1] - lift - rest_hips[1]) / hips_scale + height) / scale,
