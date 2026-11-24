@@ -10,7 +10,7 @@ AZKimodo is the complete build around [kimodo.cpp](https://github.com/localai-or
 |---|---|---|
 | **`kimodo.bat`** | One-file Windows installer and launcher. Bare machine → GPU build → web demo in the browser. | this repo, [Releases](../../releases/latest) |
 | **Engine fork** | kimodo.cpp with pose-constrained generation (`kmd-constrain`), hard pinning, weighted masks and a ~5× faster denoiser. | [azigo45/kimodo.cpp](https://github.com/azigo45/kimodo.cpp) |
-| **AZ Kimodo Motion** | Maya tool: generate from text or from poses you key by hand, bake onto an Advanced Skeleton rig or an AZ Body Rig (FK or IK), correct the poses on the timeline, recalculate. | `azkimodo-maya-1.49.3.zip` in [Releases](../../releases/latest), source in `maya/azkimodo/` |
+| **AZ Kimodo Motion** | Maya tool: generate from text or from poses you key by hand, bake onto an Advanced Skeleton rig or an AZ Body Rig (FK or IK), correct the poses on the timeline, recalculate. | `azkimodo-maya-1.49.4.zip` in [Releases](../../releases/latest), source in `maya/azkimodo/` |
 
 Built by **Alexander Antonov — AzRigTool**. Download more of my tools at **[aztools.xyz](https://aztools.xyz)**. Not affiliated with NVIDIA or LocalAI.
 
@@ -70,7 +70,7 @@ Developed on Maya 2025 for Windows. Needs the engine from section 1.
 
 ### Install
 
-1. Download **`azkimodo-maya-1.49.3.zip`** from the [latest release](../../releases/latest) and unpack it.
+1. Download **`azkimodo-maya-1.49.4.zip`** from the [latest release](../../releases/latest) and unpack it.
 2. Copy the **`azkimodo`** folder into `Documents\maya\2025\scripts\`. You should end up with `Documents\maya\2025\scripts\azkimodo\az_kimodo_gen.py`.
 3. Start or restart Maya.
 4. Open the Script Editor, paste this into a **Python** tab and run it:
@@ -80,7 +80,7 @@ from azkimodo import az_kimodo_gen_qt
 az_kimodo_gen_qt.show()
 ```
 
-The window opens with `v1.49.3` in its header.
+The window opens with `v1.49.4` in its header.
 
 **Shelf button:** open the shelf you want it on and run this once. A button with the tool's icon appears there.
 
@@ -158,6 +158,7 @@ Full notices and license texts: [THIRD_PARTY.md](THIRD_PARTY.md) and [`licenses/
 
 ## Changelog
 
+- **2.4.3** — AZ Kimodo Motion 1.49.4: same tool as 1.49.3, the version now matches the AZ Rig build. New download `azkimodo-maya-1.49.4.zip`. Installer and engine unchanged.
 - **2.4.2** — AZ Kimodo Motion 1.49.3: the header shows the tool's own icon, which opens [aztools.xyz](https://aztools.xyz) when clicked; the site link is now a button, *Download more of my tools at aztools.xyz*, under the status line. New download `azkimodo-maya-1.49.3.zip`. Installer and engine unchanged.
 - **2.4.1** — AZ Kimodo Motion 1.49.0: an icon of its own, on the window and on a shelf button that `install_shelf_button()` adds; the window keeps to what a newcomer needs, with Advanced settings left out; **Remember bind pose** and **Clear rig animation** moved to CHARACTER → **Change...**; a link to [aztools.xyz](https://aztools.xyz). New download `azkimodo-maya-1.49.0.zip`. Installer and engine unchanged.
 - **2.4.0** — AZ Kimodo Motion 1.48.1. Drives AZ Body Rig as well as Advanced Skeleton: FK, IK legs and arms, and an IK spine. New POSE TO POSE tab: key poses by hand and the model fills in the motion between them. Fixes: feet stand flat on rigs whose ankle sits high above a short foot; a keyed FK/IK switch no longer takes a bake out of IK; a pose with the body turned round under IK hands is refused instead of spinning the character; a drag of `Main` keeps the poses placed before it; analyzed poses remember which way `Main` points. New download `azkimodo-maya-1.48.1.zip`. Installer and engine unchanged.

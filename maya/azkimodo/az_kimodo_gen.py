@@ -23,9 +23,11 @@ Launch in Maya:
     from azkimodo import az_kimodo_gen_qt
     az_kimodo_gen_qt.show()
 
-VERSION 1.49.3
+VERSION 1.49.4
 
 History
+    1.49.4 Nothing changes in this copy: the version follows the AZ Rig
+           build, which loads a character file of its own.
     1.49.3 The header shows the tool's own icon (az_kimodo_logo.png,
            256 px) instead of the AZ logo; it still opens the site. The
            site button reads "Download more of my tools at aztools.xyz"
@@ -374,7 +376,7 @@ except Exception:
     mel = None
     om2 = None
 
-VERSION = "1.49.3"
+VERSION = "1.49.4"
 
 def _default_root():
     """The first kimodo.cpp checkout on any drive, else C:/kimodo.cpp.
