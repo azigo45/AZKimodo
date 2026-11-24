@@ -62,9 +62,10 @@ _LOGO_CANDIDATES = (
 _CHECK_SVG_PATH = os.path.join(_HERE, "_azkim_check.svg")
 _ICON_PATH = os.path.join(_HERE, "az_kimodo_icon.png")
 SITE_URL = "https://aztools.xyz"
+SITE_TEXT = "Download more of my tools at aztools.xyz"
 SHELF_LABEL = "AZ Kimodo Motion"
-# Advanced settings: model, solver, scene, manual pins, retarget options. A
-# build for newcomers hides it - everything on screen works on its defaults.
+# Advanced settings: model, solver, scene, manual pins, retarget options.
+# Hidden - everything on screen works on its defaults. True brings it back.
 SHOW_ADVANCED = False
 
 _WIN = None
@@ -146,6 +147,11 @@ QPushButton#accent:hover { background: #497cbb; }
 QPushButton#danger { background: #8a4a44; border: 1px solid #6d3a35; }
 QPushButton#danger:hover { background: #9a534c; }
 QPushButton#sm { padding: 3px 8px; min-height: 10px; background: #40444b; }
+QPushButton#site {
+    background: #26303c; border: 1px solid #3f6ea8; border-radius: 11px;
+    padding: 4px 14px; color: #9ec2f0; font-weight: 700;
+}
+QPushButton#site:hover { background: #2f3d4f; color: #c4dcf8; }
 QPushButton#help {
     background: #33363c; border: 1px solid #3f6ea8; border-radius: 12px;
     min-width: 24px; max-width: 24px; min-height: 24px; max-height: 24px;
@@ -334,15 +340,32 @@ def _group(title):
     return box, outer
 
 
+def _open_site(*_args):
+    QtGui.QDesktopServices.openUrl(QtCore.QUrl(SITE_URL))
+
+
 def _site_link():
-    """The author's site, small and quiet, opening in the browser."""
-    link = _label('<a href="%s" style="color:#7ea6d8;text-decoration:none;">%s</a>'
-                  % (SITE_URL, SITE_URL.split("//")[-1]))
-    link.setOpenExternalLinks(True)
-    link.setToolTip("More tools by %s" % AUTHOR)
-    link.setStyleSheet("font-size:9px;")
-    link.setAlignment(QtCore.Qt.AlignRight)
-    return link
+    """A button to the author's site. It used to be a 9 px link nobody saw."""
+    button = _btn(SITE_TEXT, "site", "Opens %s in the browser" % SITE_URL,
+                  _open_site)
+    button.setCursor(QtCore.Qt.PointingHandCursor)
+    return button
+
+
+class _SiteLogo(QtWidgets.QLabel):
+    """The header logo, which opens the site when clicked."""
+
+    def __init__(self, pixmap):
+        super(_SiteLogo, self).__init__()
+        self.setPixmap(pixmap)
+        self.setFixedSize(pixmap.width(), pixmap.height())
+        self.setCursor(QtCore.Qt.PointingHandCursor)
+        self.setToolTip(SITE_TEXT)
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == QtCore.Qt.LeftButton:
+            _open_site()
+        super(_SiteLogo, self).mouseReleaseEvent(event)
 
 
 def _progress_bar():
@@ -742,7 +765,8 @@ class AZKimodoMotionWindow(QtWidgets.QDialog):
         self.lbl_status.setStyleSheet("color:#7d828c;font-size:9px;")
         self.lbl_status.setWordWrap(True)
         root.addWidget(self.lbl_status)
-        root.addWidget(_site_link())
+        # A row of its own: the sentence is long and the status needs its width.
+        root.addWidget(_site_link(), 0, QtCore.Qt.AlignRight)
 
         self._add_segment()
         # Pose to pose counts its frames from the take's start frame, which
@@ -800,10 +824,7 @@ class AZKimodoMotionWindow(QtWidgets.QDialog):
                 pixmap = QtGui.QPixmap(path)
                 if not pixmap.isNull():
                     pixmap = pixmap.scaledToHeight(46, QtCore.Qt.SmoothTransformation)
-                    label = QtWidgets.QLabel()
-                    label.setPixmap(pixmap)
-                    label.setFixedSize(pixmap.width(), 46)
-                    return label
+                    return _SiteLogo(pixmap)
         mono = _label("aZ", "logoMono")
         mono.setAlignment(QtCore.Qt.AlignCenter)
         return mono

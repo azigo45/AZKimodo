@@ -23,9 +23,19 @@ Launch in Maya:
     from azkimodo import az_kimodo_gen_qt
     az_kimodo_gen_qt.show()
 
-VERSION 1.49.0
+VERSION 1.49.3
 
 History
+    1.49.3 The header shows the tool's own icon (az_kimodo_logo.png,
+           256 px) instead of the AZ logo; it still opens the site. The
+           site button reads "Download more of my tools at aztools.xyz"
+           and has a row of its own under the status line.
+    1.49.2 The link to aztools.xyz is a button you can see, beside the
+           status line and in the help, and the logo in the header opens
+           the site too.
+    1.49.1 The AZ Rig copy matches the public one: Advanced settings is
+           hidden here too. Its menu item shows the icon and says what the
+           tool does now.
     1.49.0 An icon of its own, on the window and on the shelf button that
            install_shelf_button() puts on the open shelf. A link to
            aztools.xyz under the status line and in the help. Remember bind
@@ -364,7 +374,7 @@ except Exception:
     mel = None
     om2 = None
 
-VERSION = "1.49.0"
+VERSION = "1.49.3"
 
 def _default_root():
     """The first kimodo.cpp checkout on any drive, else C:/kimodo.cpp.
