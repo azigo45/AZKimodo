@@ -23,9 +23,12 @@ Launch in Maya:
     from azkimodo import az_kimodo_gen_qt
     az_kimodo_gen_qt.show()
 
-VERSION 1.50.0
+VERSION 1.50.1
 
 History
+    1.50.1 KIMO comes inside the AZ Kimodo Motion package of AZ Tools: one
+           install brings the tool and the character. The hint without a
+           character says so.
     1.50.0 KIMO, a ready character on AZ Body Rig, comes free with AZ Tools
            (package AZ Kimodo Character): with it installed the window opens
            with KIMO on the stage, and without a character it says where to
@@ -384,7 +387,7 @@ except Exception:
     mel = None
     om2 = None
 
-VERSION = "1.50.0"
+VERSION = "1.50.1"
 
 def _default_root():
     """The first kimodo.cpp checkout on any drive, else C:/kimodo.cpp.
@@ -4374,13 +4377,14 @@ CHARACTER_ENV = "AZ_KIMODO_CHARACTER"
 _CHARACTER_CANDIDATES = ()
 _CAMERAS = ("persp", "top", "front", "side")
 
-# The ready character, KIMO, comes as a free AZ Tools package. The AZ Tools
-# Manager puts the scripts folder of every installed package on sys.path, so
-# the package is found by importing it: without AZ Tools it is simply absent.
+# The ready character, KIMO, travels inside the free AZ Kimodo Motion package
+# of AZ Tools. The AZ Tools Manager puts the scripts folder of every installed
+# package on sys.path, so the character module is found by importing it:
+# without AZ Tools it is simply absent.
 AZTOOLS_CHARACTER_MODULE = "az_kimodo_character"
-AZTOOLS_CHARACTER_HINT = ("KIMO, a ready character, is free in AZ Tools "
-                          "(aztools.xyz): install AZ Tools and AZ Kimodo Character "
-                          "from its library, and the window opens with KIMO")
+AZTOOLS_CHARACTER_HINT = ("KIMO, a ready character, comes free with AZ Kimodo Motion "
+                          "from AZ Tools (aztools.xyz): installed from there, the "
+                          "window opens with KIMO")
 
 
 def aztools_character():
