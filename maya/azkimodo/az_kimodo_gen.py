@@ -23,9 +23,16 @@ Launch in Maya:
     from azkimodo import az_kimodo_gen_qt
     az_kimodo_gen_qt.show()
 
-VERSION 1.49.4
+VERSION 1.50.0
 
 History
+    1.50.0 KIMO, a ready character on AZ Body Rig, comes free with AZ Tools
+           (package AZ Kimodo Character): with it installed the window opens
+           with KIMO on the stage, and without a character it says where to
+           get one. Textures of a loaded rig file that are missing on this
+           machine are taken from beside the file or its textures folder.
+    1.49.5 Nothing changes in this copy: the version follows the AZ Rig
+           build, which loads a character file of its own.
     1.49.4 Nothing changes in this copy: the version follows the AZ Rig
            build, which loads a character file of its own.
     1.49.3 The header shows the tool's own icon (az_kimodo_logo.png,
@@ -359,6 +366,7 @@ from __future__ import print_function
 
 import contextlib
 import hashlib
+import importlib
 import json
 import math
 import os
@@ -376,7 +384,7 @@ except Exception:
     mel = None
     om2 = None
 
-VERSION = "1.49.4"
+VERSION = "1.50.0"
 
 def _default_root():
     """The first kimodo.cpp checkout on any drive, else C:/kimodo.cpp.
@@ -4366,12 +4374,31 @@ CHARACTER_ENV = "AZ_KIMODO_CHARACTER"
 _CHARACTER_CANDIDATES = ()
 _CAMERAS = ("persp", "top", "front", "side")
 
+# The ready character, KIMO, comes as a free AZ Tools package. The AZ Tools
+# Manager puts the scripts folder of every installed package on sys.path, so
+# the package is found by importing it: without AZ Tools it is simply absent.
+AZTOOLS_CHARACTER_MODULE = "az_kimodo_character"
+AZTOOLS_CHARACTER_HINT = ("KIMO, a ready character, is free in AZ Tools "
+                          "(aztools.xyz): install AZ Tools and AZ Kimodo Character "
+                          "from its library, and the window opens with KIMO")
+
+
+def aztools_character():
+    """The rig file of the AZ Tools character package, or "" without it."""
+    try:
+        module = importlib.import_module(AZTOOLS_CHARACTER_MODULE)
+        path = module.scene_path()
+    except Exception:
+        return ""
+    return path.replace("\\", "/") if path and os.path.isfile(path) else ""
+
 
 def character_file():
     """The rig file the window opens on its own, or "" when none is known.
 
     $AZ_KIMODO_CHARACTER wins, then whatever was last picked in the UI, then
-    a character folder beside the install, then the known copy.
+    the known copies, then KIMO from AZ Tools, then a character folder beside
+    the install.
     """
     path = os.environ.get(CHARACTER_ENV, "")
     if path and os.path.isfile(path):
@@ -4383,11 +4410,38 @@ def character_file():
                 return path.replace("\\", "/")
     except Exception:
         pass
-    candidates = ("%s/maya/character/Manny_Rig.ma" % install_root(),)
-    for candidate in candidates + _CHARACTER_CANDIDATES:
+    for candidate in _CHARACTER_CANDIDATES:
         if os.path.isfile(candidate):
             return candidate.replace("\\", "/")
+    path = aztools_character()
+    if path:
+        return path
+    candidate = "%s/maya/character/Manny_Rig.ma" % install_root()
+    if os.path.isfile(candidate):
+        return candidate.replace("\\", "/")
     return ""
+
+
+def relink_textures(nodes, folder):
+    """Point file textures missing on this machine at the same file name in
+    the textures folder beside the rig file, or beside it. A character that
+    travels as a package keeps its maps next to its scene. Returns the count."""
+    fixed = 0
+    for node in nodes:
+        try:
+            current = cmds.getAttr(node + ".fileTextureName") or ""
+        except Exception:
+            continue
+        if not current or os.path.isfile(current):
+            continue
+        name = os.path.basename(current.replace("\\", "/"))
+        for candidate in (os.path.join(folder, "textures", name), os.path.join(folder, name)):
+            if os.path.isfile(candidate):
+                cmds.setAttr(node + ".fileTextureName", candidate.replace("\\", "/"),
+                             type="string")
+                fixed += 1
+                break
+    return fixed
 
 
 def remember_character_file(path):
@@ -4434,10 +4488,13 @@ def load_character(path):
         return root, identify_target(root)
 
     before = set(cmds.ls(assemblies=True, long=True) or [])
+    textures_before = set(cmds.ls(type="file") or [])
     kind = "mayaBinary" if path.lower().endswith(".mb") else "mayaAscii"
     cmds.file(path, i=True, type=kind, ignoreVersion=True,
               preserveReferences=True, mergeNamespacesOnClash=False,
               options="v=0;")
+    relink_textures([node for node in cmds.ls(type="file") or []
+                     if node not in textures_before], os.path.dirname(path))
     fresh = [node for node in cmds.ls(assemblies=True, long=True) or []
              if node not in before]
     found = {}
@@ -4473,7 +4530,8 @@ def ensure_character(path=None):
         used_path = path or character_file()
         if not used_path:
             return {"root": None, "key": "", "loaded": False, "path": "",
-                    "notes": ["no character in the scene and no rig file set"]}
+                    "notes": ["no character in the scene and no rig file set",
+                              AZTOOLS_CHARACTER_HINT]}
         root, key = load_character(used_path)
         loaded = True
 

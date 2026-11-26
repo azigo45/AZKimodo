@@ -10,11 +10,11 @@ AZKimodo is the complete build around [kimodo.cpp](https://github.com/localai-or
 |---|---|---|
 | **`kimodo.bat`** | One-file Windows installer and launcher. Bare machine → GPU build → web demo in the browser. | this repo, [Releases](../../releases/latest) |
 | **Engine fork** | kimodo.cpp with pose-constrained generation (`kmd-constrain`), hard pinning, weighted masks and a ~5× faster denoiser. | [azigo45/kimodo.cpp](https://github.com/azigo45/kimodo.cpp) |
-| **AZ Kimodo Motion** | Maya tool: generate from text or from poses you key by hand, bake onto an Advanced Skeleton rig or an AZ Body Rig (FK or IK), correct the poses on the timeline, recalculate. | `azkimodo-maya-1.49.4.zip` in [Releases](../../releases/latest), source in `maya/azkimodo/` |
+| **AZ Kimodo Motion** | Maya tool: generate from text or from poses you key by hand, bake onto an Advanced Skeleton rig or an AZ Body Rig (FK or IK), correct the poses on the timeline, recalculate. | `azkimodo-maya-1.50.0.zip` in [Releases](../../releases/latest), source in `maya/azkimodo/` |
 
 Built by **Alexander Antonov — AzRigTool**. Download more of my tools at **[aztools.xyz](https://aztools.xyz)**. Not affiliated with NVIDIA or LocalAI.
 
-**Installing for Maya takes two steps:** run `kimodo.bat` once ([section 1](#1-install-the-engine-kimodobat)), then copy the Maya tool ([section 3](#3-the-maya-tool-az-kimodo-motion)).
+**Installing for Maya takes two steps:** run `kimodo.bat` once ([section 1](#1-install-the-engine-kimodobat)), then copy the Maya tool ([section 3](#3-the-maya-tool-az-kimodo-motion)). Want the window to open with a ready, rigged character? Install [AZ Tools](https://aztools.xyz) as well and get KIMO from it ([Your character](#your-character)).
 
 ---
 
@@ -70,7 +70,7 @@ Developed on Maya 2025 for Windows. Needs the engine from section 1.
 
 ### Install
 
-1. Download **`azkimodo-maya-1.49.4.zip`** from the [latest release](../../releases/latest) and unpack it.
+1. Download **`azkimodo-maya-1.50.0.zip`** from the [latest release](../../releases/latest) and unpack it.
 2. Copy the **`azkimodo`** folder into `Documents\maya\2025\scripts\`. You should end up with `Documents\maya\2025\scripts\azkimodo\az_kimodo_gen.py`.
 3. Start or restart Maya.
 4. Open the Script Editor, paste this into a **Python** tab and run it:
@@ -80,7 +80,7 @@ from azkimodo import az_kimodo_gen_qt
 az_kimodo_gen_qt.show()
 ```
 
-The window opens with `v1.49.4` in its header.
+The window opens with `v1.50.0` in its header.
 
 **Shelf button:** open the shelf you want it on and run this once. A button with the tool's icon appears there.
 
@@ -93,6 +93,8 @@ The tool finds the engine by itself: `AZ_KIMODO_ROOT` if you set that environmen
 
 **To update:** replace the `azkimodo` folder and restart Maya.
 
+**Ready character:** for the window to open straight away with a rigged character, install [AZ Tools](https://aztools.xyz) and the free **AZ Kimodo Character** from its library — see [Your character](#your-character).
+
 ### Your character
 
 The tool drives rigs it recognises by name:
@@ -101,7 +103,13 @@ The tool drives rigs it recognises by name:
 - **AZ Body Rig** controls: `C_main_CTRL`, `C_root_CTRL`, `C_chest_FK_CTRL`, `L_wrist_FK_CTRL`, `R_knee_FK_CTRL`, `L_ball_FK_CTRL`, and the rest. Any spine length works.
 - **UE5 Mannequin** skeleton: `pelvis`, `spine_05`, `clavicle_l`, `thigh_r`, `ball_l`, and the rest.
 
-No rig ships with the tool. Open your rig's scene first and the tool picks the rig up when its window opens. Otherwise press **Change...** in CHARACTER, then pick the rig file and press **Load**, or select any node of the rig and press **Use selected**. The rig should stand in its bind pose when it first arrives, because that pose becomes the reference for every bake.
+**KIMO, a ready character.** KIMO, an android on AZ Body Rig, comes free with **[AZ Tools](https://aztools.xyz)** — the installer and manager of my Maya tools:
+
+1. Download AZ Tools from [aztools.xyz](https://aztools.xyz), drag its installer into Maya and sign in (the account is free).
+2. In the AZ Tools library, on the **Animation** tab, install **AZ Kimodo Character**.
+3. Open AZ Kimodo Motion in an empty scene: KIMO comes in, is measured and becomes the target on its own. The **AZ Kimodo Character** item of the AZ Tools menu opens the Kimodo window too.
+
+Without AZ Tools no rig comes with the tool. **Your own rig:** open its scene first and the tool picks the rig up when its window opens. Otherwise press **Change...** in CHARACTER, then pick the rig file and press **Load**, or select any node of the rig and press **Use selected**. The rig should stand in its bind pose when it first arrives, because that pose becomes the reference for every bake.
 
 ### Use it
 
@@ -141,7 +149,7 @@ The **?** button in the header opens the built-in help.
 - **GENERATE MOTION is grey and the window says `text bundle missing`:** `kimodo.bat` older than 2.2.1 finished without the text encoder, which its publisher moved on 2026-10-29. Download the current `kimodo.bat` and run it on the same folder. It fetches the missing 15 GB. You can also fetch them by hand: `hf download LocalAI-io/Llama-3-Kimodo-GGML --revision 3e8d958803beaddb6011ac534f2be972e2710c7d --include "generated/llm2vec-text-bundle/*" --local-dir <engine folder>`.
 - **`No module named azkimodo`:** the folder is in the wrong place, or Maya has not been restarted since it was copied. Check the path in Install, step 2.
 - **The window says the install root or `kmd-generate` was not found:** run `kimodo.bat`, or set `AZ_KIMODO_ROOT` as described above.
-- **No character is found:** your rig's control names differ from those listed in *Your character*.
+- **No character is found:** your rig's control names differ from those listed in *Your character* — or, for KIMO, AZ Kimodo Character is not installed in AZ Tools.
 - **"the rig carries animation, so its bind pose cannot be measured":** press **Change...** in CHARACTER, then **Clear rig animation**; or put the rig at bind and press **Remember bind pose** there.
 - **A solve stopped and the generated skeleton stayed in the scene:** press Ctrl+Z or generate again, and send the Script Editor output with your report.
 
@@ -158,6 +166,7 @@ Full notices and license texts: [THIRD_PARTY.md](THIRD_PARTY.md) and [`licenses/
 
 ## Changelog
 
+- **2.5.0** — AZ Kimodo Motion 1.50.0: KIMO, a ready android on AZ Body Rig, comes free with [AZ Tools](https://aztools.xyz) as **AZ Kimodo Character**; with it installed the window opens with KIMO on the stage, and without a character it says where to get one. Textures of a loaded rig file that are missing on this machine are taken from beside the file. New download `azkimodo-maya-1.50.0.zip`. Installer and engine unchanged.
 - **2.4.3** — AZ Kimodo Motion 1.49.4: same tool as 1.49.3, the version now matches the AZ Rig build. New download `azkimodo-maya-1.49.4.zip`. Installer and engine unchanged.
 - **2.4.2** — AZ Kimodo Motion 1.49.3: the header shows the tool's own icon, which opens [aztools.xyz](https://aztools.xyz) when clicked; the site link is now a button, *Download more of my tools at aztools.xyz*, under the status line. New download `azkimodo-maya-1.49.3.zip`. Installer and engine unchanged.
 - **2.4.1** — AZ Kimodo Motion 1.49.0: an icon of its own, on the window and on a shelf button that `install_shelf_button()` adds; the window keeps to what a newcomer needs, with Advanced settings left out; **Remember bind pose** and **Clear rig animation** moved to CHARACTER → **Change...**; a link to [aztools.xyz](https://aztools.xyz). New download `azkimodo-maya-1.49.0.zip`. Installer and engine unchanged.

@@ -2068,7 +2068,8 @@ class AZKimodoMotionWindow(QtWidgets.QDialog):
         if not info["root"]:
             self.lbl_target.setText(
                 "No character. Pick its rig file below and press Load, or "
-                "select a rig and press Use selected.")
+                "select a rig and press Use selected. KIMO, a ready character, "
+                "is free in AZ Tools (aztools.xyz).")
             self.btn_change_character.setChecked(True)
             self._say("; ".join(info["notes"]))
             return
