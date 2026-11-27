@@ -749,6 +749,10 @@ class AZKimodoMotionWindow(QtWidgets.QDialog):
         self._timer = QtCore.QTimer(self)
         self._timer.setInterval(1000)
         self._timer.timeout.connect(self._tick)
+        # While the engine installer runs: look for the engine every half a minute.
+        self._engine_timer = QtCore.QTimer(self)
+        self._engine_timer.setInterval(30000)
+        self._engine_timer.timeout.connect(self._check_engine)
 
         root = QtWidgets.QVBoxLayout(self)
         root.setContentsMargins(10, 10, 10, 10)
@@ -845,7 +849,10 @@ class AZKimodoMotionWindow(QtWidgets.QDialog):
         layout.setSpacing(8)
 
         # The everyday path stays on screen: who, what, generate, adjust.
-        # Everything else waits behind one button.
+        # Everything else waits behind one button. ENGINE shows only while
+        # there is no engine to generate with.
+        self.grp_engine = self._build_engine_group()
+        layout.addWidget(self.grp_engine)
         layout.addWidget(self._build_character_group())
         layout.addWidget(self._build_prompt_group())
         layout.addWidget(self._build_action_group())
@@ -882,11 +889,74 @@ class AZKimodoMotionWindow(QtWidgets.QDialog):
         area.setFrameShape(QtWidgets.QFrame.NoFrame)
         return area
 
-    def _build_model_group(self):
-        box, layout = _group("MODEL")
+    def _build_engine_group(self):
+        box, layout = _group("ENGINE")
+        note = _label(
+            "The Kimodo engine is not on this computer yet. Its installer sets up "
+            "what it needs (Git, Python, the C++ build tools, the Vulkan SDK), "
+            "builds the engine from GitHub and downloads the model weights from "
+            "Hugging Face: about 19 GB, the first time close to an hour. It runs "
+            "in its own window; Maya stays free.")
+        note.setWordWrap(True)
+        layout.addWidget(note)
+        self.btn_install_engine = _btn(
+            "INSTALL ENGINE", "accent",
+            "Runs kimodo.bat, the engine installer, in a window of its own",
+            self._install_engine)
+        self.btn_check_engine = _btn("Check again", "sm",
+                                     "Looks for the engine again", self._check_engine)
+        layout.addWidget(_row(self.btn_install_engine, self.btn_check_engine))
+        box.setVisible(not self._install["ok"])
+        return box
+
+    def _install_engine(self, *_args):
+        if not core.installer_path():
+            QtGui.QDesktopServices.openUrl(QtCore.QUrl(core.INSTALLER_PAGE))
+            self._say("This copy came without the installer: download kimodo.bat "
+                      "from the release page that just opened and run it.")
+            self._engine_timer.start()
+            return
+        answer = QtWidgets.QMessageBox.question(
+            self, "Install the Kimodo engine",
+            "Run the engine installer now?\n\n"
+            "It opens in its own window. Windows asks for administrator rights "
+            "for the tools it installs, and about 19 GB are downloaded - the "
+            "first time takes close to an hour. At its folder prompt press Enter "
+            "for the default folder.\n\n"
+            "This window turns ready by itself once the engine is found.",
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+            QtWidgets.QMessageBox.Yes)
+        if answer != QtWidgets.QMessageBox.Yes:
+            return
+        try:
+            core.run_installer()
+        except Exception as error:
+            self._say("Could not start the installer: %s" % error)
+            return
+        self._engine_timer.start()
+        self._say("The engine installer runs in its own window. This window "
+                  "looks for the engine every half a minute.")
+
+    def _check_engine(self, *_args):
+        self._install = core.rescan_install()
+        if not self._install["ok"]:
+            if not self._engine_timer.isActive():
+                self._report_install()
+            return
+        self._engine_timer.stop()
+        self.grp_engine.setVisible(False)
+        self._fill_models()
+        self._describe_model()
+        self._set_running(self._process is not None)
+        self._report_install()
+
+    def _fill_models(self):
+        """The model list from the install; the first one the character can
+        use (SOMA, 30 joints) is picked."""
         labels = [model["label"] for model in self._install["models"]]
-        self.cmb_model = _combo(labels or ["<none found>"],
-                                "Motion model to solve with")
+        blocked = self.cmb_model.blockSignals(True)
+        self.cmb_model.clear()
+        self.cmb_model.addItems(labels or ["<none found>"])
         self.cmb_model.setEnabled(bool(labels))
         # The selector is out of sight now, so the default has to be a model
         # the character can actually use.
@@ -894,6 +964,12 @@ class AZKimodoMotionWindow(QtWidgets.QDialog):
             if model["skeleton_key"] == core.SOMA30["key"]:
                 self.cmb_model.setCurrentIndex(index)
                 break
+        self.cmb_model.blockSignals(blocked)
+
+    def _build_model_group(self):
+        box, layout = _group("MODEL")
+        self.cmb_model = _combo(["<none found>"], "Motion model to solve with")
+        self._fill_models()
         self.cmb_model.currentIndexChanged.connect(self._describe_model)
         layout.addWidget(self.cmb_model)
 

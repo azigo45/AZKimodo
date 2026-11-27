@@ -23,9 +23,14 @@ Launch in Maya:
     from azkimodo import az_kimodo_gen_qt
     az_kimodo_gen_qt.show()
 
-VERSION 1.50.1
+VERSION 1.51.0
 
 History
+    1.51.0 The engine installer (kimodo.bat) travels with the tool. When no
+           engine is found, the window shows ENGINE: INSTALL ENGINE asks, then
+           starts the installer in a window of its own, and the window turns
+           ready by itself once the engine is there (Check again on demand).
+           A copy without the installer opens its release page instead.
     1.50.1 KIMO comes inside the AZ Kimodo Motion package of AZ Tools: one
            install brings the tool and the character. The hint without a
            character says so.
@@ -387,7 +392,7 @@ except Exception:
     mel = None
     om2 = None
 
-VERSION = "1.50.1"
+VERSION = "1.51.0"
 
 def _default_root():
     """The first kimodo.cpp checkout on any drive, else C:/kimodo.cpp.
@@ -596,6 +601,45 @@ def probe(root=None):
 
     return {"root": base, "generator": generator, "text_bundle": bundle,
             "models": models, "problems": problems, "ok": not problems}
+
+
+# --------------------------------------------------------------------------- #
+# Engine installer
+# --------------------------------------------------------------------------- #
+#
+# The engine is not a Maya thing: kimodo.bat sets up Git, Python, the C++ build
+# tools and the Vulkan SDK, builds kimodo.cpp from GitHub and downloads the
+# weights (about 19 GB). It travels next to this module in the AZ Tools package
+# and the release zip, and the window offers to start it when no engine is
+# found - it never runs without the animator saying yes.
+
+INSTALLER_NAME = "kimodo.bat"
+INSTALLER_PAGE = "https://github.com/azigo45/AZKimodo/releases/latest"
+
+
+def installer_path():
+    """kimodo.bat beside this module, or "" when this copy came without it."""
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), INSTALLER_NAME)
+    return path.replace("\\", "/") if os.path.isfile(path) else ""
+
+
+def run_installer():
+    """Start kimodo.bat in a window of its own, as a double-click would.
+    Returns its path, or "" when no installer travels with the tool."""
+    path = installer_path()
+    if path:
+        os.startfile(os.path.normpath(path))
+    return path
+
+
+def rescan_install():
+    """probe() again, the default engine folder looked up anew: the installer
+    may have just put kimodo.cpp on a drive that was empty when Maya started."""
+    global DEFAULT_ROOT
+    finder = globals().get("_default_root")
+    if callable(finder):
+        DEFAULT_ROOT = finder()
+    return probe()
 
 
 # --------------------------------------------------------------------------- #
